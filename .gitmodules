@@ -1,0 +1,35 @@
+[submodule "tools/mcp/datacommons"]
+	path = tools/mcp/datacommons
+	url = https://github.com/datacommonsorg/agent-toolkit.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/healthcare-mcp-public"]
+	path = tools/mcp/healthcare-mcp-public
+	url = https://github.com/Cicatriiz/healthcare-mcp-public.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/mcp-playwright"]
+	path = tools/mcp/mcp-playwright
+	url = https://github.com/ImRonAI/electron-playwright-agentic.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/openapi-mcp"]
+	path = tools/mcp/openapi-mcp
+	url = https://github.com/ivo-toby/mcp-openapi-server.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/pophive-mcp-server"]
+	path = tools/mcp/pophive-mcp-server
+	url = https://github.com/Cicatriiz/pophive-mcp-server.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/telnyx-mcp-server"]
+	path = tools/mcp/telnyx-mcp-server
+	url = https://github.com/team-telnyx/telnyx-mcp-server.git
+	branch = main
+	ignore = dirty
+[submodule "tools/mcp/unsloth-mcp-server"]
+	path = tools/mcp/unsloth-mcp-server
+	url = https://github.com/OtotaO/unsloth-mcp-server
+	branch = main
+	ignore = dirty
