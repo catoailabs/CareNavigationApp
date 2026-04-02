@@ -1,0 +1,113 @@
+- npiLookup: Looks up provider records in the NPI registry.
+- analyze_text_for_medications: Performs NLP entity extraction on medical text.
+- pubmed_fetch_citations: Fetches citation records from PubMed.
+- pubmed_fetch_related: Fetches related records from PubMed.
+- pubmed_fetch_summaries: Fetches summary records from PubMed.
+- getAbuse: Extracts abuse section from FDA drug labels.
+- getBoxedWarning: Extracts boxed warnings from FDA drug labels.
+- getClinicalPharmacology: Extracts clinical pharmacology from FDA drug labels.
+- getContraindications: Extracts contraindications from FDA drug labels.
+- getDosageAndAdministration: Extracts dosage info from FDA drug labels.
+- getDrugInteractions: Extracts drug interactions from FDA drug labels.
+- getGeriatricUse: Extracts geriatric use info from FDA drug labels.
+- getIndicationsAndUsage: Extracts indications from FDA drug labels.
+- getMechanismOfAction: Extracts mechanism of action from FDA drug labels.
+- getWarnings: Extracts warnings from FDA drug labels.
+- getActiveIngredient: Extracts active ingredients from FDA drug labels.
+- dicom_anonymize: Strips PHI from DICOM files.
+- dicom_create_fhir_imaging_study: Translates DICOM metadata into a FHIR ImagingStudy resource.
+- dicom_qido_search: Queries PACs/Orthanc servers.
+- dicom_query_orthanc: Queries Orthanc servers.
+- dicom_read_metadata: Extracts raw header data from DICOM files.
+- dicom_read_pixel_data: Extracts pixel arrays from DICOM files.
+- dicom_store_orthanc: Pushes instances to PACS.
+- dicom_wado_retrieve: Pulls instances from PACS.
+- dicom_to_png: Converts DICOM slices to standard image formats.
+- dicom_validate_tags: Validates DICOM tags.
+- make_call: Initiates a phone call via Telnyx.
+- hangup: Ends an active call.
+- transfer: Transfers an active call.
+- send_dtmf: Sends DTMF tones during a call.
+- listen: Records audio input.
+- speak: Synthesizes and plays text-to-speech audio.
+- playback_start: Starts audio playback.
+- playback_stop: Stops audio playback.
+- chat_video: Manages video chat sessions.
+- get_phone_number: Retrieves phone number details.
+- list_phone_numbers: Lists available phone numbers.
+- update_phone_number: Updates phone number configuration.
+- list_available_phone_numbers: Searches for new phone numbers to provision.
+- initiate_phone_number_order: Purchases a new phone number.
+- create_messaging_profile: Creates an SMS/MMS routing profile.
+- get_messaging_profile: Retrieves an SMS/MMS routing profile.
+- list_messaging_profiles: Lists SMS/MMS routing profiles.
+- update_messaging_profile: Updates an SMS/MMS routing profile.
+- create_call_control_application: Creates a Telnyx Webhook app.
+- get_call_control_application: Retrieves a Telnyx Webhook app.
+- list_call_control_applications: Lists Telnyx Webhook apps.
+- gmail_reply: Composes and sends email replies via Gmail API.
+- gmail_send: Composes and sends new emails via Gmail API.
+- slack: Posts messages to Slack.
+- slack_send_message: Posts messages to specific Slack channels/users.
+- use_google: Interacts with Google APIs.
+- google_auth: Manages Google OAuth flow.
+- cursor: Integrates with the Cursor IDE.
+- exa_get_contents: Retrieves page contents via Exa neural search.
+- exa_search: Performs neural web searches via Exa.
+- perplexity_deep_research: Executes deep research tasks via Perplexity API.
+- perplexity_search_api: Performs standard searches via Perplexity API.
+- perplexity_sonar_pro: Performs advanced searches via Perplexity Sonar Pro.
+- tavily_crawl: Crawls websites using Tavily.
+- tavily_extract: Extracts specific data using Tavily.
+- tavily_map: Maps website structures using Tavily.
+- tavily_search: Performs web searches using Tavily.
+- bright_data: Performs proxy-based web scraping.
+- create_task: Creates a new task in a project management system.
+- get_task: Retrieves task details.
+- update_task: Updates an existing task.
+- search_tasks: Searches for tasks based on criteria.
+- add_task_relationship: Links tasks together.
+- create_issue_in_project: Creates an issue ticket.
+- get_projects: Lists available projects.
+- get_project_hierarchy: Retrieves the structure of a project.
+- set_selected_project: Sets the active project context.
+- cloud_storage_create_bucket: Creates a new cloud storage bucket.
+- cloud_storage_delete_object: Deletes a file from cloud storage.
+- cloud_storage_download_file: Downloads a file from cloud storage.
+- cloud_storage_list_objects: Lists files in a cloud storage bucket.
+- cloud_storage_list_buckets: Lists available cloud storage buckets.
+- cloud_storage_upload_file: Uploads a file to cloud storage.
+- create_integration_secret: Stores an API key or token securely.
+- delete_integration_secret: Removes a stored API key or token.
+- list_integration_secrets: Lists stored API keys or tokens.
+- get_webhook_events: Retrieves incoming webhook payloads.
+- create_toolset: Creates a logical grouping of tools.
+- delete_toolset: Deletes a tool group.
+- get_toolset: Retrieves a specific tool group.
+- list_toolsets: Lists available tool groups.
+- load_toolset: Loads a tool group into the active agent.
+- unload_toolset: Removes a tool group from the active agent.
+- execute_catalog_tool: Executes a tool directly from the catalog.
+- get_catalog_tool: Retrieves details about a catalog tool.
+- list_catalog_categories: Lists categories of tools in the catalog.
+- asciimatics_ui: Renders terminal-based user interfaces.
+- bluetooth: Interacts with system Bluetooth devices.
+- calculator: Evaluates mathematical expressions.
+- clipboard: Reads from or writes to the system clipboard.
+- cron: Schedules jobs for recurring execution.
+- current_time: Retrieves the current system time.
+- diagram: Generates Mermaid or UML diagrams.
+- dialog: Triggers OS-level alert boxes or prompts.
+- human_typer: Simulates realistic keyboard typing delays.
+- screen_reader: Provides screen reading/accessibility testing utilities.
+- utility: Provides generic text and data formatting functions.
+- template: Renders string templates (e.g., Jinja).
+- actor_simulator: Runs behavioral simulations for agents.
+- batch: Executes multiple tool calls concurrently.
+- experiment_generator: Generates configurations for A/B tests or evaluations.
+- journal: Logs actions for DevOps audit trails.
+- mem0_memory: Stores and retrieves long-term agent memory.
+- think: Forces the agent to generate an explicit reasoning block.
+- handoff_to_user: Yields execution control back to the human user.
+- add_file_reference: Adds a file to the agents context graph.
+- add_relationship: Modifies relationships in the agents context graph.

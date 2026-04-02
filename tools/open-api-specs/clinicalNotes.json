@@ -1,0 +1,694 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Zoom Healthcare Clinical Notes API",
+    "description": "Manage clinical notes generated during Zoom meetings with Healthcare features enabled. Provides endpoints to list, retrieve, and update AI-generated clinical notes including SOAP notes, patient context, and EHR integration metadata.\n\nPrerequisites:\n- Host user must be on a Pro plan or higher.\n- Clinical Note feature must be enabled in the host's account.\n- OAuth or Server-to-Server OAuth app with appropriate scopes.",
+    "version": "1.0.0",
+    "termsOfService": "https://explore.zoom.us/en/trust/terms/",
+    "contact": {
+      "name": "Zoom Developer Support",
+      "url": "https://developers.zoom.us/support/"
+    },
+    "license": {
+      "name": "Zoom API License",
+      "url": "https://explore.zoom.us/en/trust/terms/"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.zoom.us/v2",
+      "description": "Zoom REST API v2 — Production"
+    }
+  ],
+  "security": [
+    {
+      "OAuth2": [
+        "clinical_note:read",
+        "clinical_note:read:admin",
+        "clinical_note:write",
+        "clinical_note:write:admin"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Clinical Notes",
+      "description": "Endpoints for managing healthcare clinical notes generated during Zoom meetings."
+    }
+  ],
+  "paths": {
+    "/healthcare/clinical_notes": {
+      "get": {
+        "tags": ["Clinical Notes"],
+        "summary": "List clinical notes",
+        "description": "Returns a paginated list of clinical notes for the authenticated user or, with admin scopes, for any user on the account. Filter by meeting ID, note owner, or date range.",
+        "operationId": "listClinicalNotes",
+        "parameters": [
+          { "$ref": "#/components/parameters/NoteOwnerUserIdParam" },
+          { "$ref": "#/components/parameters/MeetingIdParam" },
+          { "$ref": "#/components/parameters/FromDateParam" },
+          { "$ref": "#/components/parameters/ToDateParam" },
+          { "$ref": "#/components/parameters/IncludeNoteContentParam" },
+          { "$ref": "#/components/parameters/PageSizeParam" },
+          { "$ref": "#/components/parameters/NextPageTokenParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully retrieved the list of clinical notes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClinicalNoteListResponse"
+                },
+                "example": {
+                  "page_size": 30,
+                  "next_page_token": "abc123",
+                  "clinical_notes": [
+                    {
+                      "note_id": "ArfRXokSTiGTCSYFVtxNa",
+                      "note_title": "Monica, F, 25",
+                      "note_owner_user_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                      "meeting_id": "I3pHE/RnRbmm+ex2g07sxw==",
+                      "meeting_number": "94564522297",
+                      "meeting_topic": "Provider John's Zoom Meeting",
+                      "meeting_host_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                      "note_start_time": "2025-05-15T03:01:08.608Z",
+                      "note_end_time": "2025-05-15T03:25:59.608Z",
+                      "note_created_time": "2025-05-15T03:26:08.608Z",
+                      "ehr_context_available": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/healthcare/clinical_notes/{noteId}": {
+      "get": {
+        "tags": ["Clinical Notes"],
+        "summary": "Get a clinical note",
+        "description": "Retrieves the full details of a single clinical note, including the AI-generated SOAP content sections, patient information, and EHR integration context when available.",
+        "operationId": "getClinicalNote",
+        "parameters": [
+          { "$ref": "#/components/parameters/NoteIdPathParam" },
+          { "$ref": "#/components/parameters/IncludeNoteContentParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully retrieved the clinical note.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClinicalNote"
+                },
+                "example": {
+                  "note_id": "ArfRXokSTiGTCSYFVtxNa",
+                  "note_title": "Monica, F, 25",
+                  "note_owner_user_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                  "meeting_id": "I3pHE/RnRbmm+ex2g07sxw==",
+                  "meeting_number": "94564522297",
+                  "meeting_topic": "Provider John's Zoom Meeting",
+                  "meeting_host_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                  "note_start_time": "2025-05-15T03:01:08.608Z",
+                  "note_end_time": "2025-05-15T03:25:59.608Z",
+                  "note_created_time": "2025-05-15T03:26:08.608Z",
+                  "note_completed_time": "2025-05-15T03:27:00.000Z",
+                  "ehr_context_available": true,
+                  "ehr_context": {
+                    "patient_id": "PAT-12345",
+                    "encounter_id": "ENC-67890",
+                    "provider_id": "PROV-54321",
+                    "appointment_id": "APT-11111"
+                  },
+                  "note_content": {
+                    "soap_note": {
+                      "subjective": "Patient presents with persistent cough for 2 weeks...",
+                      "objective": "Vitals: BP 120/80, HR 72, Temp 98.6°F...",
+                      "assessment": "Acute bronchitis, likely viral etiology...",
+                      "plan": "Supportive care with rest, fluids. Follow up in 1 week if no improvement..."
+                    },
+                    "additional_sections": [
+                      {
+                        "title": "Medications Discussed",
+                        "content": "OTC cough suppressant as needed..."
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      },
+      "patch": {
+        "tags": ["Clinical Notes"],
+        "summary": "Update a clinical note",
+        "description": "Updates the title or content sections of an existing clinical note. Only the note owner or an admin can update a note.",
+        "operationId": "updateClinicalNote",
+        "parameters": [
+          { "$ref": "#/components/parameters/NoteIdPathParam" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClinicalNoteUpdateRequest"
+              },
+              "example": {
+                "note_title": "Monica, F, 25 — Follow-up",
+                "note_content": {
+                  "soap_note": {
+                    "plan": "Updated plan: prescribe azithromycin 250 mg if symptoms persist beyond 10 days."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Clinical note updated successfully."
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "clinical_notes.note_created": {
+      "post": {
+        "tags": ["Clinical Notes"],
+        "summary": "Clinical note created event",
+        "description": "Triggered every time a clinical note is made available after the meeting's clinical note streaming session ends.\n\nRequires **Event Subscriptions** enabled for your Marketplace app with the `clinical_notes.note_created` subscription under the Healthcare event.\n\nScopes: `clinical_note:read:admin`, `clinical_note:read`\nGranular Scopes: `healthcare:read:list_clinical_notes:admin`, `healthcare:read:list_clinical_notes:master`, `healthcare:read:list_clinical_notes`",
+        "operationId": "onClinicalNoteCreated",
+        "requestBody": {
+          "description": "Webhook payload delivered when a clinical note is created.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClinicalNoteWebhookEvent"
+              },
+              "example": {
+                "event": "clinical_notes.note_created",
+                "event_ts": 1626230691572,
+                "payload": {
+                  "account_id": "lm5YQGvrQkufX4Z87vVZyQ",
+                  "object": {
+                    "meeting_id": "I3pHE/RnRbmm+ex2g07sxw==",
+                    "meeting_number": "94564522297",
+                    "meeting_topic": "Provider John's Zoom Meeting",
+                    "meeting_host_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                    "note_id": "ArfRXokSTiGTCSYFVtxNa",
+                    "note_owner_user_id": "dqV7XEpnS5G3rGsvqylmjQ",
+                    "note_start_time": "2025-05-15T03:01:08.608Z",
+                    "note_end_time": "2025-05-15T03:25:59.608Z",
+                    "note_created_time": "2025-05-15T03:26:08.608Z",
+                    "note_title": "Monica, F, 25",
+                    "ehr_context_available": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Webhook received successfully."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "description": "Zoom OAuth 2.0 authorization. Supports Authorization Code and Server-to-Server OAuth flows.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://zoom.us/oauth/authorize",
+            "tokenUrl": "https://zoom.us/oauth/token",
+            "scopes": {
+              "clinical_note:read": "View clinical notes you own.",
+              "clinical_note:read:admin": "View any clinical note on the account.",
+              "clinical_note:write": "Update clinical notes you own.",
+              "clinical_note:write:admin": "Update any clinical note on the account."
+            }
+          },
+          "clientCredentials": {
+            "tokenUrl": "https://zoom.us/oauth/token",
+            "scopes": {
+              "clinical_note:read": "View clinical notes you own.",
+              "clinical_note:read:admin": "View any clinical note on the account.",
+              "clinical_note:write": "Update clinical notes you own.",
+              "clinical_note:write:admin": "Update any clinical note on the account."
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "NoteIdPathParam": {
+        "name": "noteId",
+        "in": "path",
+        "required": true,
+        "description": "Unique identifier of the clinical note.",
+        "schema": {
+          "type": "string",
+          "example": "ArfRXokSTiGTCSYFVtxNa"
+        }
+      },
+      "NoteOwnerUserIdParam": {
+        "name": "note_owner_user_id",
+        "in": "query",
+        "description": "Filter notes by the user ID of the note owner (the user who started the clinical notes session). Required when using admin scopes to query another user's notes.",
+        "schema": {
+          "type": "string",
+          "example": "dqV7XEpnS5G3rGsvqylmjQ"
+        }
+      },
+      "MeetingIdParam": {
+        "name": "meeting_id",
+        "in": "query",
+        "description": "Filter notes by the unique meeting UUID. Double-encode the UUID if it begins with `/` or contains `//`.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "IncludeNoteContentParam": {
+        "name": "include_note_content",
+        "in": "query",
+        "description": "Set to `true` to include the full note content (SOAP sections) in the response. Defaults to `false`.",
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "FromDateParam": {
+        "name": "from",
+        "in": "query",
+        "description": "Start date for filtering notes (inclusive). Format: `yyyy-MM-dd` or ISO 8601 date-time.",
+        "schema": {
+          "type": "string",
+          "format": "date",
+          "example": "2025-01-01"
+        }
+      },
+      "ToDateParam": {
+        "name": "to",
+        "in": "query",
+        "description": "End date for filtering notes (inclusive). Format: `yyyy-MM-dd` or ISO 8601 date-time.",
+        "schema": {
+          "type": "string",
+          "format": "date",
+          "example": "2025-12-31"
+        }
+      },
+      "PageSizeParam": {
+        "name": "page_size",
+        "in": "query",
+        "description": "Number of records to return per page. Maximum 300.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 30
+        }
+      },
+      "NextPageTokenParam": {
+        "name": "next_page_token",
+        "in": "query",
+        "description": "Token for fetching the next page of results. Returned in the previous response when more pages are available.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "ClinicalNote": {
+        "type": "object",
+        "description": "A clinical note generated during a Zoom meeting with Healthcare clinical notes enabled.",
+        "required": [
+          "note_id",
+          "note_title",
+          "note_owner_user_id",
+          "meeting_id",
+          "meeting_number",
+          "meeting_topic",
+          "meeting_host_id",
+          "note_start_time",
+          "note_end_time",
+          "note_created_time",
+          "ehr_context_available"
+        ],
+        "properties": {
+          "note_id": {
+            "type": "string",
+            "description": "Unique identifier of the clinical note.",
+            "example": "ArfRXokSTiGTCSYFVtxNa"
+          },
+          "note_title": {
+            "type": "string",
+            "description": "Title of the clinical note, typically patient name, sex, and age.",
+            "example": "Monica, F, 25"
+          },
+          "note_owner_user_id": {
+            "type": "string",
+            "description": "User ID of the person who started the clinical notes session and owns the note document.",
+            "example": "dqV7XEpnS5G3rGsvqylmjQ"
+          },
+          "meeting_id": {
+            "type": "string",
+            "description": "Unique meeting UUID. Each meeting instance generates its own UUID. Double-encode the UUID if it begins with `/` or contains `//`."
+          },
+          "meeting_number": {
+            "type": "string",
+            "description": "The meeting's numeric ID."
+          },
+          "meeting_topic": {
+            "type": "string",
+            "description": "The meeting topic or title."
+          },
+          "meeting_host_id": {
+            "type": "string",
+            "description": "User ID of the meeting host."
+          },
+          "note_start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the clinical note session started, in ISO 8601 UTC format."
+          },
+          "note_end_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the clinical note session ended, in ISO 8601 UTC format."
+          },
+          "note_created_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the clinical note document was created, in ISO 8601 UTC format."
+          },
+          "note_completed_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the clinical note generation was completed, in ISO 8601 UTC format."
+          },
+          "ehr_context_available": {
+            "type": "boolean",
+            "description": "Whether EHR context data (appointment, patient, and provider identifiers) is available for this clinical note."
+          },
+          "ehr_context": {
+            "$ref": "#/components/schemas/EHRContext"
+          },
+          "note_content": {
+            "$ref": "#/components/schemas/NoteContent"
+          }
+        }
+      },
+      "ClinicalNoteListResponse": {
+        "type": "object",
+        "description": "Paginated list of clinical notes.",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "description": "Number of records returned in this page."
+          },
+          "next_page_token": {
+            "type": "string",
+            "description": "Token to retrieve the next page of results. Empty when there are no more pages."
+          },
+          "clinical_notes": {
+            "type": "array",
+            "description": "List of clinical note objects.",
+            "items": {
+              "$ref": "#/components/schemas/ClinicalNote"
+            }
+          }
+        }
+      },
+      "ClinicalNoteUpdateRequest": {
+        "type": "object",
+        "description": "Fields to update on a clinical note. All fields are optional; only provided fields are modified.",
+        "properties": {
+          "note_title": {
+            "type": "string",
+            "description": "Updated title for the clinical note."
+          },
+          "note_content": {
+            "type": "object",
+            "description": "Partial note content to merge into the existing note.",
+            "properties": {
+              "soap_note": {
+                "$ref": "#/components/schemas/SOAPNotePartial"
+              },
+              "additional_sections": {
+                "type": "array",
+                "description": "Additional custom sections to add or update.",
+                "items": {
+                  "$ref": "#/components/schemas/NoteSection"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ClinicalNoteWebhookEvent": {
+        "type": "object",
+        "description": "Webhook event payload for clinical_notes.note_created.",
+        "required": ["event", "event_ts", "payload"],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "The event name.",
+            "example": "clinical_notes.note_created"
+          },
+          "event_ts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Timestamp in milliseconds since epoch when the event occurred."
+          },
+          "payload": {
+            "type": "object",
+            "required": ["account_id", "object"],
+            "properties": {
+              "account_id": {
+                "type": "string",
+                "description": "Account ID of the user who started the clinical notes session."
+              },
+              "object": {
+                "$ref": "#/components/schemas/ClinicalNote"
+              }
+            }
+          }
+        }
+      },
+      "EHRContext": {
+        "type": "object",
+        "description": "Electronic Health Record context linked to the clinical note.",
+        "properties": {
+          "patient_id": {
+            "type": "string",
+            "description": "Patient identifier from the EHR system."
+          },
+          "encounter_id": {
+            "type": "string",
+            "description": "Encounter or visit identifier from the EHR system."
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "Provider identifier from the EHR system."
+          },
+          "appointment_id": {
+            "type": "string",
+            "description": "Appointment identifier from the EHR system."
+          }
+        }
+      },
+      "NoteContent": {
+        "type": "object",
+        "description": "Full content of the clinical note, including SOAP sections and any additional custom sections.",
+        "properties": {
+          "soap_note": {
+            "$ref": "#/components/schemas/SOAPNote"
+          },
+          "additional_sections": {
+            "type": "array",
+            "description": "Additional custom sections beyond the standard SOAP note.",
+            "items": {
+              "$ref": "#/components/schemas/NoteSection"
+            }
+          }
+        }
+      },
+      "SOAPNote": {
+        "type": "object",
+        "description": "Standard SOAP-format clinical note sections.",
+        "properties": {
+          "subjective": {
+            "type": "string",
+            "description": "Subjective section — patient-reported symptoms, history, and chief complaint."
+          },
+          "objective": {
+            "type": "string",
+            "description": "Objective section — measurable findings such as vitals, exam results, and lab data."
+          },
+          "assessment": {
+            "type": "string",
+            "description": "Assessment section — clinical diagnosis and interpretation."
+          },
+          "plan": {
+            "type": "string",
+            "description": "Plan section — treatment plan, prescriptions, follow-up instructions."
+          }
+        }
+      },
+      "SOAPNotePartial": {
+        "type": "object",
+        "description": "Partial SOAP note for update operations. Only provided fields are merged.",
+        "properties": {
+          "subjective": {
+            "type": "string",
+            "description": "Updated subjective section."
+          },
+          "objective": {
+            "type": "string",
+            "description": "Updated objective section."
+          },
+          "assessment": {
+            "type": "string",
+            "description": "Updated assessment section."
+          },
+          "plan": {
+            "type": "string",
+            "description": "Updated plan section."
+          }
+        }
+      },
+      "NoteSection": {
+        "type": "object",
+        "description": "A custom content section within a clinical note.",
+        "required": ["title", "content"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Section heading."
+          },
+          "content": {
+            "type": "string",
+            "description": "Section body text."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Standard error response body.",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "Error code."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message."
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The request was invalid or malformed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 400,
+              "message": "Invalid request parameters."
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication credentials are missing or invalid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 401,
+              "message": "Access token is missing or invalid."
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The authenticated user does not have the required scopes or permissions.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 403,
+              "message": "Insufficient permissions to access this resource."
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The requested resource was not found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 404,
+              "message": "Clinical note not found."
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Rate limit exceeded. Retry after the duration specified in the Retry-After header.",
+        "headers": {
+          "Retry-After": {
+            "description": "Number of seconds to wait before retrying.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 429,
+              "message": "Rate limit exceeded."
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,3139 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Zoom Calendar API",
+    "description": "The Zoom Calendar API enables developers to programmatically manage Zoom Calendar resources including calendars, calendar lists, events, ACL rules, colors, free/busy information, and user settings. Supports scheduling, syncing, and integrating Zoom Calendar with third-party applications.\n\nPrerequisites:\n- OAuth or Server-to-Server OAuth app with appropriate calendar scopes.\n- Zoom account with Calendar feature enabled.",
+    "termsOfService": "https://zoom.us/docs/en-us/zoom_api_license_and_tou.html",
+    "contact": {
+      "name": "Zoom Developers",
+      "url": "https://developer.zoom.us/"
+    },
+    "version": "2",
+    "license": {
+      "name": "Zoom API License",
+      "url": "https://zoom.us/docs/en-us/zoom_api_license_and_tou.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.zoom.us/v2",
+      "description": "Zoom REST API v2 — Production"
+    }
+  ],
+  "paths": {
+    "/calendars/{calId}/acl": {
+      "get": {
+        "tags": [
+          "acl"
+        ],
+        "summary": "List ACL rules of specified calendar",
+        "description": "Returns the rules in the access control list for the calendar.\n\n**Rate Limit:** MEDIUM",
+        "operationId": "listAcl",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/MaxResultsParam"
+          },
+          {
+            "$ref": "#/components/parameters/ShowDeletedParam"
+          },
+          {
+            "$ref": "#/components/parameters/PageTokenParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ACL rules retrieved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "acl"
+        ],
+        "summary": "Create a new ACL rule",
+        "description": "Creates an access control list rule.\n\n**Rate Limit:** HEAVY",
+        "operationId": "insertAcl",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AclRuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ACL rule created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRule"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/acl/{aclId}": {
+      "get": {
+        "tags": [
+          "acl"
+        ],
+        "summary": "Get the specified ACL rule",
+        "operationId": "getAcl",
+        "description": "Returns an access control list rule.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/AclIdParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ACL rule retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRule"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "acl"
+        ],
+        "summary": "Update the specified ACL rule",
+        "operationId": "patchAcl",
+        "description": "Updates an access control list rule.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/AclIdParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AclRuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ACL rule updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRule"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "acl"
+        ],
+        "summary": "Delete an existing ACL rule",
+        "operationId": "deleteAcl",
+        "description": "Deletes an access control list rule.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/AclIdParam"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "ACL rule deleted."
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/users/{userIdentifier}/calendarList": {
+      "get": {
+        "tags": [
+          "calendar list"
+        ],
+        "summary": "List calendars in user's calendar list",
+        "operationId": "listCalendarList",
+        "description": "Returns the calendars in the user's calendar list.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserIdentifierParam"
+          },
+          {
+            "$ref": "#/components/parameters/MaxResultsParam"
+          },
+          {
+            "name": "minAccessRole",
+            "in": "query",
+            "required": false,
+            "description": "Minimum access role filter.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "freeBusyReader",
+                "reader",
+                "writer",
+                "owner"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/PageTokenParam"
+          },
+          {
+            "$ref": "#/components/parameters/ShowDeletedParam"
+          },
+          {
+            "name": "showHidden",
+            "in": "query",
+            "required": false,
+            "description": "Whether to show hidden entries.",
+            "schema": {
+              "type": "boolean",
+              "example": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Calendar list retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "calendar list"
+        ],
+        "summary": "Insert a calendar into user's calendar list",
+        "operationId": "insertCalendarList",
+        "description": "Inserts an existing calendar into the user's calendar list.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserIdentifierParam"
+          },
+          {
+            "name": "colorRgbFormat",
+            "in": "query",
+            "required": false,
+            "description": "Set to true to use custom RGB colors.",
+            "schema": {
+              "type": "boolean",
+              "example": true
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarListEntry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Calendar list entry created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarListEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/users/{userIdentifier}/calendarList/{calendarId}": {
+      "get": {
+        "tags": [
+          "calendar list"
+        ],
+        "summary": "Get a calendar from user's calendar list",
+        "operationId": "getCalendarList",
+        "description": "Returns a calendar from the user's calendar list.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserIdentifierParam"
+          },
+          {
+            "$ref": "#/components/parameters/CalendarIdParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Calendar list entry retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarListEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "calendar list"
+        ],
+        "summary": "Update a calendar in user's calendar list",
+        "operationId": "patchCalendarList",
+        "description": "Updates an existing calendar on the user's calendar list.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserIdentifierParam"
+          },
+          {
+            "$ref": "#/components/parameters/CalendarIdParam"
+          },
+          {
+            "name": "colorRgbFormat",
+            "in": "query",
+            "required": false,
+            "description": "Set to true to change colors.",
+            "schema": {
+              "type": "boolean",
+              "example": true
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarListEntry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Calendar list entry updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarListEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "calendar list"
+        ],
+        "summary": "Delete a calendar from user's calendar list",
+        "operationId": "deleteCalendarList",
+        "description": "Removes a calendar from the user's calendar list.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserIdentifierParam"
+          },
+          {
+            "$ref": "#/components/parameters/CalendarIdParam"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Calendar removed from list."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars": {
+      "post": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Create a new secondary calendar",
+        "operationId": "insertCalendar",
+        "description": "Creates a secondary calendar.\n\n**Rate Limit:** HEAVY",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "summary"
+                ],
+                "properties": {
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "example": "my calendar"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Calendar created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Calendar"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}": {
+      "get": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Get the specified calendar",
+        "operationId": "getCalendar",
+        "description": "Returns metadata for a calendar.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Calendar retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Calendar"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Update the specified calendar",
+        "operationId": "patchCalendar",
+        "description": "Updates metadata for a calendar.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "timeZone": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 1024
+                  },
+                  "location": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Calendar updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Calendar"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Delete a calendar",
+        "operationId": "deleteCalendar",
+        "description": "Deletes a calendar.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Calendar deleted."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/colors": {
+      "get": {
+        "tags": [
+          "colors"
+        ],
+        "summary": "Get color definitions",
+        "operationId": "getColors",
+        "description": "Returns the color definitions for calendars and events.\n\n**Rate Limit:** LIGHT",
+        "responses": {
+          "200": {
+            "description": "Colors retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "calendar#colors"
+                      ]
+                    },
+                    "updated": {
+                      "type": "string",
+                      "format": "date-time",
+                      "readOnly": true
+                    },
+                    "calendar": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ColorDefinition"
+                      }
+                    },
+                    "event": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ColorDefinition"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "List events on a calendar",
+        "operationId": "listEvents",
+        "description": "Returns events on the specified calendar.\n\n**Rate Limit:** MEDIUM",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/MaxResultsParam"
+          },
+          {
+            "name": "orderBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "startTime",
+                "updated"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/ShowDeletedParam"
+          },
+          {
+            "name": "singleEvents",
+            "in": "query",
+            "required": false,
+            "description": "Expand recurring events into instances.",
+            "schema": {
+              "type": "boolean",
+              "example": false
+            }
+          },
+          {
+            "$ref": "#/components/parameters/PageTokenParam"
+          },
+          {
+            "name": "timeMin",
+            "in": "query",
+            "required": false,
+            "description": "Lower bound (exclusive) for event end time. RFC3339.",
+            "schema": {
+              "type": "string",
+              "example": "2024-01-01T00:00:00Z"
+            }
+          },
+          {
+            "name": "timeMax",
+            "in": "query",
+            "required": false,
+            "description": "Upper bound (exclusive) for event start time. RFC3339.",
+            "schema": {
+              "type": "string",
+              "example": "2024-02-01T00:00:00Z"
+            }
+          },
+          {
+            "name": "timeZone",
+            "in": "query",
+            "required": false,
+            "description": "Time zone for the response.",
+            "schema": {
+              "type": "string",
+              "example": "America/Los_Angeles"
+            }
+          },
+          {
+            "name": "syncToken",
+            "in": "query",
+            "required": false,
+            "description": "Token to retrieve only events updated since last sync.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Insert a new event",
+        "operationId": "insertEvent",
+        "description": "Creates an event.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/SendUpdatesParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events/import": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Import event to calendar",
+        "operationId": "importEvent",
+        "description": "Imports an event (adds a private copy of an existing event).\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event imported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events/quickAdd": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Quick add an event",
+        "operationId": "quickAddEvent",
+        "description": "Creates an event based on a simple text string.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "required": true,
+            "description": "Text describing the event.",
+            "schema": {
+              "type": "string",
+              "example": "event summary"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SendUpdatesParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events/{eventId}": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Get a specific event",
+        "operationId": "getEvent",
+        "description": "Returns an event.\n\n**Rate Limit:** LIGHT",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Update an event",
+        "operationId": "patchEvent",
+        "description": "Updates an event.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/SendUpdatesParam"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Delete an event",
+        "operationId": "deleteEvent",
+        "description": "Deletes an event.\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/SendUpdatesParam"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Event deleted."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events/{eventId}/instances": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "List instances of a recurring event",
+        "operationId": "listEventInstances",
+        "description": "Returns instances of the specified recurring event.\n\n**Rate Limit:** MEDIUM",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/MaxResultsParam"
+          },
+          {
+            "$ref": "#/components/parameters/ShowDeletedParam"
+          },
+          {
+            "$ref": "#/components/parameters/PageTokenParam"
+          },
+          {
+            "name": "timeMin",
+            "in": "query",
+            "required": false,
+            "description": "Lower bound (exclusive) for event end time. RFC3339.",
+            "schema": {
+              "type": "string",
+              "example": "2024-01-01T00:00:00Z"
+            }
+          },
+          {
+            "name": "timeMax",
+            "in": "query",
+            "required": false,
+            "description": "Upper bound (exclusive) for event start time. RFC3339.",
+            "schema": {
+              "type": "string",
+              "example": "2024-02-01T00:00:00Z"
+            }
+          },
+          {
+            "name": "timeZone",
+            "in": "query",
+            "required": false,
+            "description": "Time zone for the response.",
+            "schema": {
+              "type": "string",
+              "example": "America/Los_Angeles"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event instances retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/{calId}/events/{eventId}/move": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Move an event to another calendar",
+        "operationId": "moveEvent",
+        "description": "Moves an event to another calendar (changes organizer).\n\n**Rate Limit:** HEAVY",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CalIdParam"
+          },
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          },
+          {
+            "name": "destination",
+            "in": "query",
+            "required": true,
+            "description": "Target calendar identifier.",
+            "schema": {
+              "type": "string",
+              "example": "fed.cba@zoom.com"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SendUpdatesParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/calendars/freeBusy": {
+      "post": {
+        "tags": [
+          "freebusy"
+        ],
+        "summary": "Query freebusy information for a set of calendars",
+        "description": "Returns free or busy information for a set of calendars.\n\n**[Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read`,`calendar:read:admin`\n\n**[Granular Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read:list_events`,`calendar:read:list_events:admin`\n\n**[Rate Limit Label](https://marketplace.zoom.us/docs/api-reference/rate-limits#rate-limits):** `MEDIUM`",
+        "operationId": "Queryfreebusy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "timeMax",
+                  "timeMin"
+                ],
+                "type": "object",
+                "properties": {
+                  "timeZone": {
+                    "type": "string",
+                    "description": "The time zone in the response.",
+                    "readOnly": true,
+                    "example": "America/Los_Angeles"
+                  },
+                  "timeMin": {
+                    "type": "string",
+                    "description": "The start of the interval for the query.",
+                    "format": "date-time",
+                    "example": "2024-01-01T00:00:00Z"
+                  },
+                  "timeMax": {
+                    "type": "string",
+                    "description": "The end of the interval for the query.",
+                    "format": "date-time",
+                    "example": "2024-02-01T00:00:00Z"
+                  },
+                  "calendarExpansionMax": {
+                    "type": "integer",
+                    "description": "The maximum number of calendars for which FreeBusy information is to be provided.",
+                    "example": 50
+                  },
+                  "groupExpansionMax": {
+                    "type": "integer",
+                    "description": "The maximum number of calendar identifiers to be provided for a single group.",
+                    "example": 100
+                  },
+                  "items": {
+                    "type": "array",
+                    "description": "The list of calendars and/or groups to query.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The identifier of a calendar or a group.",
+                          "format": "email",
+                          "example": "abc.def@zoom.com"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "If successful, this method returns a response body with the following structure:",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "required": [
+                    "kind",
+                    "timeMax",
+                    "timeMin"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "description": "The type of the resource.",
+                      "example": "calendar#freeBusy",
+                      "enum": [
+                        "calendar#freeBusy"
+                      ]
+                    },
+                    "timeMin": {
+                      "type": "string",
+                      "description": "The start of the interval.",
+                      "format": "date-time",
+                      "example": "2024-01-01T00:00:00Z"
+                    },
+                    "timeMax": {
+                      "type": "string",
+                      "description": "The end of the interval.",
+                      "format": "date-time",
+                      "example": "2024-02-01T00:00:00Z"
+                    },
+                    "calendars": {
+                      "type": "array",
+                      "description": "The expansion of calendars.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The calendar identifier.",
+                            "example": "abc.def@zoom.com"
+                          },
+                          "errors": {
+                            "type": "array",
+                            "description": "The optional errors.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "domain": {
+                                  "type": "string",
+                                  "description": "The domain, or broad category, of the error.",
+                                  "example": "global"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "description": "The specific reason for the error.",
+                                  "example": "notFound"
+                                }
+                              }
+                            }
+                          },
+                          "busy": {
+                            "type": "array",
+                            "description": "The list of time ranges during which this calendar should be regarded as busy.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "start": {
+                                  "type": "string",
+                                  "description": "The (inclusive) start of the time period.",
+                                  "example": "2024-01-20T17:00:00Z"
+                                },
+                                "end": {
+                                  "type": "string",
+                                  "description": "The (exclusive) end of the time period.",
+                                  "example": "2024-01-20T18:00:00Z"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "description": "The list of time ranges during which this calendar should be regarded as busy."
+                      }
+                    },
+                    "groups": {
+                      "type": "array",
+                      "description": "The expansion of groups.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The group identifier.",
+                            "example": "abc.group@zoom.com"
+                          },
+                          "errors": {
+                            "type": "object",
+                            "properties": {
+                              "domain": {
+                                "type": "string",
+                                "description": "The domain, or broad category, of the error.",
+                                "example": "global"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "description": "The specific reason for the error.",
+                                "example": "notFound"
+                              }
+                            }
+                          },
+                          "calendars": {
+                            "type": "array",
+                            "description": "The list of calendars included in the group.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "**HTTP Status Code:** `400` <br>\n Bad Request  \n\n "
+          },
+          "429": {
+            "description": "**HTTP Status Code:** `429` <br>\n Too Many Requests. For more information, see [rate limits](https://developers.zoom.us/docs/api/rest/rate-limits/). \n\n "
+          }
+        },
+        "security": [
+          {
+            "openapi_oauth": [
+              "calendar:read",
+              "calendar:read:admin",
+              "calendar:read:list_events",
+              "calendar:read:list_events:admin"
+            ],
+            "openapi_authorization": []
+          }
+        ]
+      }
+    },
+    "/calendars/users/{userIdentifier}/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "List all user calendar settings of the authenticated user",
+        "description": "Returns all user settings for the authenticated user.\n\n**[Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read`,`calendar:read:admin`\n\n**[Granular Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read:list_settings`\n\n**[Rate Limit Label](https://marketplace.zoom.us/docs/api-reference/rate-limits#rate-limits):** `MEDIUM`",
+        "operationId": "Listsettings",
+        "parameters": [
+          {
+            "name": "userIdentifier",
+            "in": "path",
+            "description": "The user identifier. It indicates Which user's calendarList to operate.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "me"
+            }
+          },
+          {
+            "name": "maxResults",
+            "in": "query",
+            "description": "The maximum number of entries returned on one result page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 100
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "description": "The token that specifies which result page to return.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "format24HourTime"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "If successful, this method returns a response body with the following structure:",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "description": "The type of collection",
+                      "example": "calendar#settings"
+                    },
+                    "etag": {
+                      "type": "string",
+                      "description": "The Etag of the collection.",
+                      "example": "\"00000000000000000000\""
+                    },
+                    "nextPageToken": {
+                      "type": "string",
+                      "description": "The token that accesses the next page of this result.",
+                      "example": "displaySecondaryTimezone"
+                    },
+                    "items": {
+                      "type": "array",
+                      "description": "The list of user settings.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The ID of the user setting.",
+                            "example": "autoAddZoomMeeting"
+                          },
+                          "value": {
+                            "type": "string",
+                            "description": "The value of the user setting. The format of the value depends on the ID of the setting.",
+                            "example": "false"
+                          }
+                        },
+                        "description": "A setting object."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "**HTTP Status Code:** `400` <br>\n Bad Request  \n\n "
+          },
+          "429": {
+            "description": "**HTTP Status Code:** `429` <br>\n Too Many Requests. For more information, see [rate limits](https://developers.zoom.us/docs/api/rest/rate-limits/). \n\n "
+          },
+          "500": {
+            "description": "**HTTP Status Code:** `500` <br>\n Internal Server Error  \n\n "
+          }
+        },
+        "security": [
+          {
+            "openapi_oauth": [
+              "calendar:read",
+              "calendar:read:admin",
+              "calendar:read:list_settings"
+            ],
+            "openapi_authorization": []
+          }
+        ]
+      }
+    },
+    "/calendars/users/{userIdentifier}/settings/{settingId}": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get the specified user calendar settings of the authenticated user",
+        "description": "Returns a single setting.\n\n**[Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read`,`calendar:read:admin`\n\n**[Granular Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:read:setting`\n\n**[Rate Limit Label](https://marketplace.zoom.us/docs/api-reference/rate-limits#rate-limits):** `LIGHT`",
+        "operationId": "Getsetting",
+        "parameters": [
+          {
+            "name": "userIdentifier",
+            "in": "path",
+            "description": "The user identifier. ",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "me"
+            }
+          },
+          {
+            "name": "settingId",
+            "in": "path",
+            "description": "The identifier of the user setting. To retrieve calendar IDs, call the 'List all user settings' API.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "format24HourTime"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "If successful, this method returns a setting's resource in the response body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "autoAddZoomMeeting",
+                          "enum": [
+                            "autoAddZoomMeeting",
+                            "hideInvitations",
+                            "hideInvitationsFromOthers",
+                            "hideWeekends",
+                            "remindOnRespondedEventsOnly",
+                            "showDeclinedEvents",
+                            "useKeyboardShortcuts",
+                            "format24HourTime",
+                            "displaySecondaryTimezone"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are `true` or `false`.",
+                          "example": "false",
+                          "enum": [
+                            "true",
+                            "false"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "defaultEventLength",
+                          "enum": [
+                            "defaultEventLength"
+                          ]
+                        },
+                        "value": {
+                          "pattern": "^[1-9][0-9]*$",
+                          "type": "string",
+                          "description": "The allowed values are positive numbers.",
+                          "example": "25"
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The combinations of \"Modify the event\", \"Invite others\" and \"See list of attendees\" in an event.",
+                          "example": "defaultGuestPermissions",
+                          "enum": [
+                            "defaultGuestPermissions"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are 0, 1, 2, 3, and 7. These values respesent as bitmap with three digits, from left to right are \"Modify the event\", \"Invite others\" and \"See list of attendees.\"",
+                          "example": "0",
+                          "enum": [
+                            "0",
+                            "1",
+                            "2",
+                            "3",
+                            "7"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "locale",
+                          "enum": [
+                            "locale",
+                            "timezone"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "example": "ca"
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "secondaryTimezone",
+                          "enum": [
+                            "secondaryTimezone"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "example": "America/Los_Angeles"
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Whether the week should start on Sunday (0), Monday (1), or Saturday (6).",
+                          "example": "weekStart",
+                          "enum": [
+                            "weekStart"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are 0, 1, and 6.",
+                          "example": "0",
+                          "enum": [
+                            "0",
+                            "1",
+                            "6"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The default `addon` type in an event: 1 as Zoom meeting, 2 as phone, and 3 as offline.",
+                          "example": "defaultAddOnType",
+                          "enum": [
+                            "defaultAddOnType"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are 1, 2, and 3.",
+                          "example": "1",
+                          "enum": [
+                            "1",
+                            "2",
+                            "3"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "What should the order of day (D), month (M) and year (Y) be when displaying dates.",
+                          "example": "dateFieldOrder",
+                          "enum": [
+                            "dateFieldOrder"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are ”MDY”, “DMY”,and “YMD”.",
+                          "example": "MDY",
+                          "enum": [
+                            "MDY",
+                            "DMY",
+                            "YMD"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "id",
+                        "value"
+                      ],
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The view in the calendar: D as day, W as week, M as month, Y as year, A as schedule, X as 4 days, WW as work week, and N as no fix time.",
+                          "example": "dateViewSelected",
+                          "enum": [
+                            "dateViewSelected"
+                          ]
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The allowed values are D, W, M, Y, A, X, WW, and N.",
+                          "example": "W",
+                          "enum": [
+                            "D",
+                            "W",
+                            "M",
+                            "Y",
+                            "A",
+                            "X",
+                            "WW",
+                            "N"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "**HTTP Status Code:** `404` <br>\n Not Found  \n\n "
+          },
+          "429": {
+            "description": "**HTTP Status Code:** `429` <br>\n Too Many Requests. For more information, see [rate limits](https://developers.zoom.us/docs/api/rest/rate-limits/). \n\n "
+          },
+          "500": {
+            "description": "**HTTP Status Code:** `500` <br>\n Internal Server Error  \n\n "
+          }
+        },
+        "security": [
+          {
+            "openapi_oauth": [
+              "calendar:read",
+              "calendar:read:admin",
+              "calendar:read:setting"
+            ],
+            "openapi_authorization": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Patch the specified user calendar settings of the authenticated user ",
+        "description": "Patches a single setting.\n\n**[Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:write`,`calendar:write:admin`\n\n**[Granular Scopes](https://developers.zoom.us/docs/integrations/oauth-scopes-overview/):** `calendar:update:setting`,`calendar:update:setting:admin`\n\n**[Rate Limit Label](https://marketplace.zoom.us/docs/api-reference/rate-limits#rate-limits):** `LIGHT`",
+        "operationId": "Patchsetting",
+        "parameters": [
+          {
+            "name": "userIdentifier",
+            "in": "path",
+            "description": "The user identifier.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "me"
+            }
+          },
+          {
+            "name": "settingId",
+            "in": "path",
+            "description": "The ID of the setting to be patched.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "timezone"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "id",
+                  "value"
+                ],
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "The target setting ID to patch.",
+                    "example": "timezone"
+                  },
+                  "value": {
+                    "type": "string",
+                    "description": "The target setting value to patch.",
+                    "example": "Asia/Shanghai"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "The patched setting ID.",
+                      "example": "timezone"
+                    },
+                    "value": {
+                      "type": "string",
+                      "description": "The patched setting value.",
+                      "example": "Asia/Shanghai"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "**HTTP Status Code:** `429` <br>\n Too Many Requests. For more information, see [rate limits](https://developers.zoom.us/docs/api/rest/rate-limits/). \n\n "
+          }
+        },
+        "security": [
+          {
+            "openapi_oauth": [
+              "calendar:write",
+              "calendar:write:admin",
+              "calendar:update:setting",
+              "calendar:update:setting:admin"
+            ],
+            "openapi_authorization": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "openapi_oauth": {
+        "type": "oauth2",
+        "description": "Zoom OAuth 2.0 authorization.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://zoom.us/oauth/authorize",
+            "tokenUrl": "https://zoom.us/oauth/token",
+            "scopes": {
+              "calendar:read": "View calendars.",
+              "calendar:read:admin": "View any calendar on the account.",
+              "calendar:write": "Manage calendars.",
+              "calendar:write:admin": "Manage any calendar on the account."
+            }
+          }
+        }
+      },
+      "openapi_authorization": {
+        "type": "apiKey",
+        "name": "Authorization",
+        "in": "header",
+        "description": "Bearer token authorization."
+      }
+    },
+    "schemas": {
+      "AclScope": {
+        "description": "The extent to which calendar access is granted by this ACL rule.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "The type of scope.",
+                "enum": [
+                  "default"
+                ],
+                "example": "default"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "The type of scope.",
+                "enum": [
+                  "domain"
+                ],
+                "example": "domain"
+              },
+              "value": {
+                "type": "string",
+                "description": "The name of the domain.",
+                "format": "hostname",
+                "example": "zoom.us"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "The type of scope.",
+                "enum": [
+                  "group",
+                  "user"
+                ],
+                "example": "user"
+              },
+              "value": {
+                "type": "string",
+                "description": "The email address of a user or group.",
+                "format": "email",
+                "example": "abc.def@zoom.us"
+              }
+            }
+          }
+        ]
+      },
+      "AclRole": {
+        "type": "string",
+        "description": "The role assigned to the scope.",
+        "enum": [
+          "none",
+          "freeBusyReader",
+          "reader",
+          "writer",
+          "owner"
+        ],
+        "example": "reader"
+      },
+      "AclRule": {
+        "type": "object",
+        "description": "An ACL rule granting access to a calendar.",
+        "required": [
+          "role",
+          "scope"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of resource.",
+            "enum": [
+              "calendar#aclRule"
+            ],
+            "example": "calendar#aclRule"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the resource.",
+            "example": "\"00000000000000000000\""
+          },
+          "id": {
+            "type": "string",
+            "description": "The identifier of the ACL rule.",
+            "example": "user:cba.fed@zoom.com"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AclScope"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AclRole"
+          }
+        }
+      },
+      "AclRuleInput": {
+        "type": "object",
+        "description": "Request body for creating or updating an ACL rule.",
+        "required": [
+          "role",
+          "scope"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/AclScope"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AclRole"
+          }
+        }
+      },
+      "AclList": {
+        "type": "object",
+        "description": "Paginated list of ACL rules.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of collection.",
+            "example": "calendar#acl"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the collection.",
+            "example": "\"00000000000000000000\""
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token to access the next page.",
+            "example": "user:abc@example.com!"
+          },
+          "items": {
+            "type": "array",
+            "description": "List of ACL rules.",
+            "items": {
+              "$ref": "#/components/schemas/AclRule"
+            }
+          }
+        }
+      },
+      "Reminder": {
+        "type": "object",
+        "description": "A reminder setting.",
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "The method this reminder uses.",
+            "enum": [
+              "email",
+              "popup"
+            ],
+            "example": "email"
+          },
+          "minutes": {
+            "type": "integer",
+            "description": "Minutes before the event start when the reminder triggers.",
+            "minimum": 0,
+            "maximum": 40320,
+            "example": 5
+          }
+        }
+      },
+      "AllDayReminder": {
+        "type": "object",
+        "description": "A reminder setting for all-day events.",
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "The method this reminder uses.",
+            "enum": [
+              "email",
+              "popup"
+            ],
+            "example": "email"
+          },
+          "minutes": {
+            "type": "integer",
+            "description": "Minutes before the event start when the reminder triggers.",
+            "minimum": -1439,
+            "maximum": 40320,
+            "example": 5
+          }
+        }
+      },
+      "NotificationSetting": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "The type of notification.",
+            "enum": [
+              "eventCreation",
+              "eventChange",
+              "eventCancellation",
+              "eventResponse",
+              "agenda"
+            ],
+            "example": "eventCreation"
+          },
+          "method": {
+            "type": "string",
+            "description": "The method that delivers the notification.",
+            "enum": [
+              "email"
+            ],
+            "example": "email"
+          }
+        }
+      },
+      "CalendarListEntry": {
+        "type": "object",
+        "description": "An entry in a user's calendar list.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of the resource.",
+            "example": "calendar#calendarListEntry"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the resource.",
+            "example": "\"00000000000000000000\""
+          },
+          "id": {
+            "type": "string",
+            "description": "The identifier of the calendar.",
+            "format": "email",
+            "example": "abc.def@zoom.com"
+          },
+          "summary": {
+            "type": "string",
+            "description": "The title of the calendar.",
+            "maxLength": 256,
+            "example": "My calendar"
+          },
+          "description": {
+            "type": "string",
+            "description": "The description of the calendar.",
+            "maxLength": 8192,
+            "example": "Calendar description"
+          },
+          "location": {
+            "type": "string",
+            "description": "Geographic location of the calendar.",
+            "example": "San Jose"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "The time zone of the calendar.",
+            "example": "America/Los_Angeles"
+          },
+          "colorId": {
+            "type": "string",
+            "description": "The color of the calendar.",
+            "example": "6"
+          },
+          "backgroundColor": {
+            "type": "string",
+            "description": "Main color in hexadecimal.",
+            "example": "#0088aa"
+          },
+          "foregroundColor": {
+            "type": "string",
+            "description": "Foreground color in hexadecimal.",
+            "example": "#ffffff"
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether the calendar is hidden.",
+            "example": false
+          },
+          "selected": {
+            "type": "boolean",
+            "description": "Whether the calendar shows in the UI.",
+            "example": false
+          },
+          "accessRole": {
+            "type": "string",
+            "description": "Effective access role.",
+            "readOnly": true,
+            "enum": [
+              "freeBusyReader",
+              "reader",
+              "writer",
+              "owner"
+            ],
+            "example": "freeBusyReader"
+          },
+          "defaultReminders": {
+            "type": "array",
+            "description": "Default reminders for non-all-day events.",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/Reminder"
+            }
+          },
+          "defaultAllDayReminders": {
+            "type": "array",
+            "description": "Default reminders for all-day events.",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/AllDayReminder"
+            }
+          },
+          "notificationSettings": {
+            "type": "object",
+            "description": "Notification settings for this calendar.",
+            "properties": {
+              "notifications": {
+                "type": "array",
+                "description": "List of notifications.",
+                "items": {
+                  "$ref": "#/components/schemas/NotificationSetting"
+                }
+              }
+            }
+          },
+          "primary": {
+            "type": "boolean",
+            "description": "Whether this is the primary calendar.",
+            "example": false
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Whether this entry has been deleted.",
+            "example": false
+          },
+          "summaryOverride": {
+            "type": "string",
+            "description": "User-set summary override.",
+            "example": "new summary"
+          }
+        }
+      },
+      "CalendarListResponse": {
+        "type": "object",
+        "description": "Paginated list of calendar list entries.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of the collection.",
+            "example": "calendar#calendarList"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the collection.",
+            "example": "\"00000000000000000000\""
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token to access the next page."
+          },
+          "items": {
+            "type": "array",
+            "description": "Calendar list entries.",
+            "items": {
+              "$ref": "#/components/schemas/CalendarListEntry"
+            }
+          }
+        }
+      },
+      "Calendar": {
+        "type": "object",
+        "description": "A calendar resource.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of resource.",
+            "enum": [
+              "calendar#calendar"
+            ],
+            "example": "calendar#calendar"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the resource.",
+            "example": "\"00000000000000000000\""
+          },
+          "id": {
+            "type": "string",
+            "description": "The identifier of the calendar.",
+            "format": "email",
+            "example": "abc.def@zoom.com"
+          },
+          "summary": {
+            "type": "string",
+            "description": "The title of the calendar.",
+            "maxLength": 256,
+            "example": "My calendar"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "The time zone of the calendar.",
+            "example": "America/Los_Angeles"
+          },
+          "description": {
+            "type": "string",
+            "description": "The description of the calendar.",
+            "maxLength": 1024,
+            "example": "calendar description"
+          },
+          "location": {
+            "type": "string",
+            "description": "Geographic location as free-form text.",
+            "maxLength": 1024,
+            "example": "San Jose"
+          }
+        }
+      },
+      "EventDateTime": {
+        "type": "object",
+        "description": "Date/time for an event boundary (start or end).",
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "The date in \"yyyy-mm-dd\" format for all-day events.",
+            "example": "2020-01-01"
+          },
+          "dateTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Combined date-time value (RFC3339). Time zone offset required unless timeZone is set.",
+            "example": "2020-01-01T00:00:00Z"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "IANA time zone name. Required for recurring events.",
+            "example": "America/Los_Angeles"
+          }
+        }
+      },
+      "Attendee": {
+        "type": "object",
+        "description": "An event attendee.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "additionalGuests": {
+            "type": "integer",
+            "description": "Number of additional guests. Default: 0."
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The attendee's name.",
+            "example": "Mark Joe"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The attendee's email address.",
+            "example": "mark.joe@zoom.com"
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "Whether this is an optional attendee.",
+            "example": false
+          },
+          "resource": {
+            "type": "boolean",
+            "description": "Whether the attendee is a resource.",
+            "example": false
+          },
+          "responseStatus": {
+            "type": "string",
+            "description": "The attendee's response status.",
+            "enum": [
+              "needsAction",
+              "declined",
+              "tentative",
+              "accepted"
+            ],
+            "example": "needsAction"
+          }
+        }
+      },
+      "EventReminders": {
+        "type": "object",
+        "description": "Reminder settings for an event.",
+        "properties": {
+          "useDefault": {
+            "type": "boolean",
+            "description": "Whether default calendar reminders apply.",
+            "example": false
+          },
+          "overrides": {
+            "type": "array",
+            "description": "Event-specific reminders (if not using defaults).",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/Reminder"
+            }
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "description": "A calendar event.",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The type of resource.",
+            "example": "calendar#event"
+          },
+          "etag": {
+            "type": "string",
+            "description": "The ETag of the resource."
+          },
+          "id": {
+            "type": "string",
+            "description": "The identifier of the event.",
+            "example": "0lyk1qjjd8t8thnf5y1f02a6c0"
+          },
+          "iCalUID": {
+            "type": "string",
+            "description": "The iCalendar UID.",
+            "example": "abc@zoom.us"
+          },
+          "eventType": {
+            "type": "string",
+            "description": "The type of event.",
+            "example": "default"
+          },
+          "status": {
+            "type": "string",
+            "description": "The status of the event.",
+            "enum": [
+              "confirmed",
+              "tentative",
+              "cancelled"
+            ],
+            "example": "confirmed"
+          },
+          "summary": {
+            "type": "string",
+            "description": "The title of the event.",
+            "maxLength": 1024,
+            "example": "event title"
+          },
+          "description": {
+            "type": "string",
+            "description": "The description of the event.",
+            "maxLength": 15000,
+            "example": "event description"
+          },
+          "location": {
+            "type": "string",
+            "description": "Geographic location as free-form text.",
+            "maxLength": 1024,
+            "example": "San Jose"
+          },
+          "colorId": {
+            "type": "string",
+            "description": "Color ID referring to the event colors definition.",
+            "example": "5"
+          },
+          "start": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventDateTime"
+              }
+            ],
+            "description": "The (inclusive) start time of the event."
+          },
+          "end": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventDateTime"
+              }
+            ],
+            "description": "The (exclusive) end time of the event."
+          },
+          "recurrence": {
+            "type": "array",
+            "uniqueItems": true,
+            "description": "RRULE, EXRULE, RDATE and EXDATE lines for recurring events.",
+            "items": {
+              "type": "string",
+              "example": "RRULE:FREQ=DAILY;COUNT=2;INTERVAL=3"
+            }
+          },
+          "attendees": {
+            "type": "array",
+            "description": "The attendees of the event.",
+            "items": {
+              "$ref": "#/components/schemas/Attendee"
+            }
+          },
+          "reminders": {
+            "$ref": "#/components/schemas/EventReminders"
+          },
+          "creator": {
+            "type": "object",
+            "description": "The creator of the event.",
+            "properties": {
+              "email": {
+                "type": "string",
+                "description": "Creator's email.",
+                "example": "mark.joe@zoom.com"
+              }
+            }
+          },
+          "organizer": {
+            "type": "object",
+            "description": "The organizer of the event.",
+            "properties": {
+              "email": {
+                "type": "string",
+                "description": "Organizer's email.",
+                "example": "mark.joe@zoom.com"
+              }
+            }
+          },
+          "created": {
+            "type": "string",
+            "description": "Creation time of the event.",
+            "example": "2020-01-01T00:00:00Z"
+          },
+          "updated": {
+            "type": "string",
+            "description": "Last modification time.",
+            "example": "2020-01-01T00:00:00Z"
+          },
+          "transparency": {
+            "type": "string",
+            "description": "Whether the event blocks time.",
+            "enum": [
+              "opaque",
+              "transparent"
+            ],
+            "example": "transparent"
+          },
+          "visibility": {
+            "type": "string",
+            "description": "The visibility of the event.",
+            "enum": [
+              "default",
+              "public",
+              "private"
+            ],
+            "example": "default"
+          },
+          "guestsCanInviteOthers": {
+            "type": "boolean",
+            "description": "Whether attendees can invite others. Default: true.",
+            "example": true
+          },
+          "guestsCanModify": {
+            "type": "boolean",
+            "description": "Whether attendees can modify the event. Default: false.",
+            "example": false
+          },
+          "guestsCanSeeOtherGuests": {
+            "type": "boolean",
+            "description": "Whether attendees can see other attendees. Default: true.",
+            "example": true
+          },
+          "sequence": {
+            "type": "integer",
+            "description": "Sequence number of the event.",
+            "example": 1
+          }
+        }
+      },
+      "EventInput": {
+        "type": "object",
+        "description": "Request body for creating or updating an event.",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "start": {
+            "$ref": "#/components/schemas/EventDateTime"
+          },
+          "end": {
+            "$ref": "#/components/schemas/EventDateTime"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 1024,
+            "example": "event title"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 15000,
+            "example": "event description"
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 1024,
+            "example": "San Jose"
+          },
+          "colorId": {
+            "type": "string",
+            "example": "5"
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attendee"
+            }
+          },
+          "recurrence": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "example": "RRULE:FREQ=DAILY;COUNT=2;INTERVAL=3"
+            }
+          },
+          "reminders": {
+            "$ref": "#/components/schemas/EventReminders"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "tentative",
+              "cancelled"
+            ],
+            "example": "confirmed"
+          },
+          "transparency": {
+            "type": "string",
+            "enum": [
+              "opaque",
+              "transparent"
+            ],
+            "example": "transparent"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "default",
+              "public",
+              "private"
+            ],
+            "example": "default"
+          },
+          "guestsCanInviteOthers": {
+            "type": "boolean",
+            "example": true
+          },
+          "guestsCanModify": {
+            "type": "boolean",
+            "example": false
+          },
+          "guestsCanSeeOtherGuests": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "EventListResponse": {
+        "type": "object",
+        "description": "Paginated list of events.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "example": "calendar#events"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Calendar title. Read-only."
+          },
+          "description": {
+            "type": "string",
+            "description": "Calendar description. Read-only."
+          },
+          "updated": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification time of the calendar."
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "Calendar time zone. Read-only."
+          },
+          "accessRole": {
+            "type": "string",
+            "enum": [
+              "none",
+              "freeBusyReader",
+              "reader",
+              "writer",
+              "owner"
+            ]
+          },
+          "defaultReminders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reminder"
+            }
+          },
+          "nextPageToken": {
+            "type": "string"
+          },
+          "nextSyncToken": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          }
+        }
+      },
+      "ColorDefinition": {
+        "type": "object",
+        "properties": {
+          "color_id": {
+            "type": "string",
+            "example": "1"
+          },
+          "value": {
+            "type": "object",
+            "properties": {
+              "foreground": {
+                "type": "string",
+                "example": "#FD3D4A"
+              },
+              "background": {
+                "type": "string",
+                "example": "#F7F9FA"
+              }
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Standard error response.",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "parameters": {
+      "CalIdParam": {
+        "name": "calId",
+        "in": "path",
+        "required": true,
+        "description": "Calendar identifier. Retrieve via calendarList.list.",
+        "schema": {
+          "type": "string",
+          "example": "abc.def@zoom.com"
+        }
+      },
+      "AclIdParam": {
+        "name": "aclId",
+        "in": "path",
+        "required": true,
+        "description": "ACL rule identifier.",
+        "schema": {
+          "type": "string",
+          "example": "user:cba.fed@zoom.com"
+        }
+      },
+      "UserIdentifierParam": {
+        "name": "userIdentifier",
+        "in": "path",
+        "required": true,
+        "description": "User identifier. Use 'me' for the authenticated user.",
+        "schema": {
+          "type": "string",
+          "example": "me"
+        }
+      },
+      "CalendarIdParam": {
+        "name": "calendarId",
+        "in": "path",
+        "required": true,
+        "description": "Calendar identifier within the user's calendar list.",
+        "schema": {
+          "type": "string",
+          "example": "abc@zoom.com"
+        }
+      },
+      "EventIdParam": {
+        "name": "eventId",
+        "in": "path",
+        "required": true,
+        "description": "Event identifier.",
+        "schema": {
+          "type": "string",
+          "example": "0lyk1qjjd8t8thnf5y1f02a6c0"
+        }
+      },
+      "MaxResultsParam": {
+        "name": "maxResults",
+        "in": "query",
+        "required": false,
+        "description": "Maximum number of entries per page.",
+        "schema": {
+          "type": "integer",
+          "example": 250
+        }
+      },
+      "PageTokenParam": {
+        "name": "pageToken",
+        "in": "query",
+        "required": false,
+        "description": "Token specifying which result page to return.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ShowDeletedParam": {
+        "name": "showDeleted",
+        "in": "query",
+        "required": false,
+        "description": "Whether to include deleted entries in the result.",
+        "schema": {
+          "type": "boolean",
+          "example": false
+        }
+      },
+      "SendUpdatesParam": {
+        "name": "sendUpdates",
+        "in": "query",
+        "required": false,
+        "description": "Which guests should receive notifications about the change.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "all",
+            "externalOnly",
+            "none"
+          ],
+          "example": "all"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "**HTTP Status Code:** `400` — Bad Request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 400,
+              "message": "Bad request."
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "**HTTP Status Code:** `403` — Forbidden.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 403,
+              "message": "Insufficient permissions."
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "**HTTP Status Code:** `404` — Not Found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 404,
+              "message": "Resource not found."
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "**HTTP Status Code:** `429` — Rate limit exceeded.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait before retrying.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 429,
+              "message": "Rate limit exceeded."
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "**HTTP Status Code:** `500` — Internal Server Error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "code": 500,
+              "message": "Internal server error."
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "openapi_oauth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "acl",
+      "description": "Manage access control list (ACL) rules for calendars."
+    },
+    {
+      "name": "calendar list",
+      "description": "Manage the authenticated user's calendar list."
+    },
+    {
+      "name": "calendars",
+      "description": "Create, read, update, and delete calendar resources."
+    },
+    {
+      "name": "colors",
+      "description": "Retrieve color definitions for calendars and events."
+    },
+    {
+      "name": "events",
+      "description": "Manage calendar events including CRUD, import, quick-add, instances, and move."
+    },
+    {
+      "name": "freebusy",
+      "description": "Query free/busy information for calendars."
+    },
+    {
+      "name": "settings",
+      "description": "Manage user calendar settings."
+    }
+  ]
+}

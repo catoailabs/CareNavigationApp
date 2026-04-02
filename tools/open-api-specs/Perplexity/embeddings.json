@@ -1,0 +1,83 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Perplexity Embeddings API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.perplexity.ai"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "embeddings_v1_embeddings_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {"type": "string"},
+                  "input": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                },
+                "required": ["model", "input"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          }
+        }
+      }
+    },
+    "/v1/contextualizedembeddings": {
+      "post": {
+        "operationId": "contextualized_embeddings_v1_contextualizedembeddings_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {"type": "string"},
+                  "input": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                },
+                "required": ["model", "input"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          }
+        }
+      }
+    }
+  }
+}

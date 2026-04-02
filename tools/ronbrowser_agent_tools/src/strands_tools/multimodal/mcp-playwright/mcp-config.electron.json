@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@executeautomation/playwright-mcp-server"],
+      "env": {
+        "ELECTRON_MCP_MODE": "electron",
+        "ELECTRON_BRIDGE_URL": "http://127.0.0.1:9231",
+        "ELECTRON_IFRAME_SELECTOR": "#ron-preview-embed-iframe",
+        "ELECTRON_IFRAME_TYPE": "iframe"
+      }
+    }
+  }
+}

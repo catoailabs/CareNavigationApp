@@ -1,0 +1,614 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Prior Authorization v1",
+    "description": "Optum Medical Network Prior Authorization API. Supports X12 278 (prior authorization request/response) and JSON-based prior authorization determination, inquiry, submission, and orchestration workflows.",
+    "version": "v1",
+    "contact": {
+      "name": "Optum Developer Portal",
+      "url": "https://developer.optum.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://sandbox-apigw.optum.com",
+      "description": "Optum Sandbox"
+    },
+    {
+      "url": "https://apigw.optum.com",
+      "description": "Optum Production"
+    }
+  ],
+  "paths": {
+    "/apip/auth/v2/token": {
+      "post": {
+        "summary": "Get Token",
+        "description": "Obtain an OAuth 2.0 access token using client_credentials grant. Required before calling any Prior Authorization endpoint.",
+        "operationId": "getToken",
+        "tags": ["Authentication"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": ["grant_type", "client_id", "client_secret"],
+                "properties": {
+                  "grant_type": {
+                    "type": "string",
+                    "enum": ["client_credentials"],
+                    "description": "OAuth 2.0 grant type"
+                  },
+                  "client_id": {
+                    "type": "string",
+                    "description": "API client ID"
+                  },
+                  "client_secret": {
+                    "type": "string",
+                    "description": "API client secret"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Access token response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials"
+          }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/determination": {
+      "post": {
+        "summary": "JSON Prior Authorization Determination",
+        "description": "Prior authorization determination using JSON requests. Submit a prior authorization request and receive a determination response indicating approval, denial, or pend status.",
+        "operationId": "jsonDetermination",
+        "tags": ["Determination"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorAuthDeterminationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prior authorization determination response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorAuthDeterminationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request - Invalid input"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or expired token"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/determination/x12": {
+      "post": {
+        "summary": "278x215 Prior Authorization Determination",
+        "description": "Prior authorization determination using X12 278 (Health Care Services Review) request format. Accepts raw X12 EDI 278 transaction and returns X12 278 response.",
+        "operationId": "x12Determination",
+        "tags": ["Determination"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "Raw X12 278 EDI transaction string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "X12 278 response transaction",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request - Invalid X12 format"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/inquiry": {
+      "post": {
+        "summary": "JSON Prior Authorization Inquiry",
+        "description": "Inquire about the status of a previously submitted prior authorization request using JSON format.",
+        "operationId": "jsonInquiry",
+        "tags": ["Inquiry"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorAuthInquiryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prior authorization inquiry response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorAuthInquiryResponse"
+                }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/inquiry/x12": {
+      "post": {
+        "summary": "278x215 Prior Authorization Inquiry",
+        "description": "Inquire about the status of a previously submitted prior authorization using X12 278 format.",
+        "operationId": "x12Inquiry",
+        "tags": ["Inquiry"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "Raw X12 278 EDI inquiry transaction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "X12 278 inquiry response",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/submission": {
+      "post": {
+        "summary": "JSON Prior Authorization Submission",
+        "description": "Submit a new prior authorization request using JSON format.",
+        "operationId": "jsonSubmission",
+        "tags": ["Submission"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorAuthSubmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prior authorization submission response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorAuthSubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/submission/x12": {
+      "post": {
+        "summary": "278x217 Prior Authorization Submission",
+        "description": "Submit a new prior authorization request using X12 278 format (Health Care Services Review - Request for Review and Response).",
+        "operationId": "x12Submission",
+        "tags": ["Submission"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "Raw X12 278 EDI submission transaction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "X12 278 submission response",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/authorization": {
+      "post": {
+        "summary": "JSON Prior Authorization Orchestration",
+        "description": "Orchestrated prior authorization workflow using JSON format. Combines determination, inquiry, and submission into a single orchestrated flow. Automatically routes to the appropriate payer and handles multi-step workflows.",
+        "operationId": "jsonOrchestration",
+        "tags": ["Authorization (Orchestration)"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorAuthOrchestrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Orchestrated prior authorization response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorAuthOrchestrationResponse"
+                }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/authorization/x12": {
+      "post": {
+        "summary": "278x215 Prior Authorization Orchestration",
+        "description": "Orchestrated prior authorization workflow using X12 278 format.",
+        "operationId": "x12Orchestration",
+        "tags": ["Authorization (Orchestration)"],
+        "security": [{"bearer-key": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "Raw X12 278 EDI orchestration transaction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "X12 278 orchestration response",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/rcm/prior-authorization/v1/healthcheck": {
+      "get": {
+        "summary": "Service Heartbeat",
+        "description": "Health check endpoint to validate the status of the Prior Authorization service.",
+        "operationId": "healthCheck",
+        "tags": ["Health Check"],
+        "responses": {
+          "200": {
+            "description": "Service is healthy"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer-key": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "OAuth 2.0 bearer token obtained from /apip/auth/v2/token"
+      }
+    },
+    "schemas": {
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "OAuth 2.0 access token"
+          },
+          "token_type": {
+            "type": "string",
+            "description": "Token type (Bearer)"
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "Token expiry in seconds"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Granted scopes"
+          }
+        }
+      },
+      "PriorAuthDeterminationRequest": {
+        "type": "object",
+        "description": "JSON Prior Authorization Determination request. Date format: YYYYMMDD.",
+        "required": ["controlNumber", "tradingPartnerServiceId", "provider", "subscriber", "encounter"],
+        "properties": {
+          "controlNumber": {
+            "type": "string",
+            "description": "Unique control/trace number for this transaction"
+          },
+          "tradingPartnerServiceId": {
+            "type": "string",
+            "description": "Payer/trading partner service identifier"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/Provider"
+          },
+          "subscriber": {
+            "$ref": "#/components/schemas/Subscriber"
+          },
+          "dependent": {
+            "$ref": "#/components/schemas/Dependent"
+          },
+          "encounter": {
+            "$ref": "#/components/schemas/Encounter"
+          }
+        }
+      },
+      "PriorAuthDeterminationResponse": {
+        "type": "object",
+        "description": "Prior Authorization Determination response",
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "tradingPartnerServiceId": { "type": "string" },
+          "status": { "type": "string", "enum": ["Approved", "Denied", "Pended", "Modified"] },
+          "certificationNumber": { "type": "string", "description": "Authorization/certification number if approved" },
+          "certificationEffectiveDate": { "type": "string", "description": "Date format: YYYYMMDD" },
+          "certificationExpirationDate": { "type": "string", "description": "Date format: YYYYMMDD" },
+          "provider": { "$ref": "#/components/schemas/Provider" },
+          "subscriber": { "$ref": "#/components/schemas/Subscriber" }
+        }
+      },
+      "PriorAuthInquiryRequest": {
+        "type": "object",
+        "description": "JSON Prior Authorization Inquiry request",
+        "required": ["controlNumber", "tradingPartnerServiceId"],
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "tradingPartnerServiceId": { "type": "string" },
+          "provider": { "$ref": "#/components/schemas/Provider" },
+          "subscriber": { "$ref": "#/components/schemas/Subscriber" },
+          "certificationNumber": { "type": "string", "description": "Previously issued certification number to inquire about" }
+        }
+      },
+      "PriorAuthInquiryResponse": {
+        "type": "object",
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "status": { "type": "string" },
+          "certificationNumber": { "type": "string" },
+          "certificationEffectiveDate": { "type": "string" },
+          "certificationExpirationDate": { "type": "string" },
+          "serviceDetails": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ServiceDetail" }
+          }
+        }
+      },
+      "PriorAuthSubmissionRequest": {
+        "type": "object",
+        "description": "JSON Prior Authorization Submission request",
+        "required": ["controlNumber", "tradingPartnerServiceId", "provider", "subscriber", "encounter"],
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "tradingPartnerServiceId": { "type": "string" },
+          "provider": { "$ref": "#/components/schemas/Provider" },
+          "subscriber": { "$ref": "#/components/schemas/Subscriber" },
+          "dependent": { "$ref": "#/components/schemas/Dependent" },
+          "encounter": { "$ref": "#/components/schemas/Encounter" }
+        }
+      },
+      "PriorAuthSubmissionResponse": {
+        "type": "object",
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "tradingPartnerServiceId": { "type": "string" },
+          "status": { "type": "string" },
+          "certificationNumber": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      },
+      "PriorAuthOrchestrationRequest": {
+        "type": "object",
+        "description": "JSON Prior Authorization Orchestration request. Combines determination, inquiry, and submission into a single orchestrated workflow.",
+        "required": ["controlNumber", "tradingPartnerServiceId", "provider", "subscriber", "encounter"],
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "tradingPartnerServiceId": { "type": "string" },
+          "provider": { "$ref": "#/components/schemas/Provider" },
+          "subscriber": { "$ref": "#/components/schemas/Subscriber" },
+          "dependent": { "$ref": "#/components/schemas/Dependent" },
+          "encounter": { "$ref": "#/components/schemas/Encounter" }
+        }
+      },
+      "PriorAuthOrchestrationResponse": {
+        "type": "object",
+        "properties": {
+          "controlNumber": { "type": "string" },
+          "status": { "type": "string" },
+          "certificationNumber": { "type": "string" },
+          "certificationEffectiveDate": { "type": "string" },
+          "certificationExpirationDate": { "type": "string" },
+          "provider": { "$ref": "#/components/schemas/Provider" },
+          "subscriber": { "$ref": "#/components/schemas/Subscriber" },
+          "serviceDetails": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ServiceDetail" }
+          }
+        }
+      },
+      "Provider": {
+        "type": "object",
+        "properties": {
+          "organizationName": { "type": "string" },
+          "npi": { "type": "string", "description": "National Provider Identifier (10-digit)" },
+          "taxId": { "type": "string" },
+          "providerType": { "type": "string", "enum": ["Billing", "Rendering", "Referring", "Attending"] },
+          "address": { "$ref": "#/components/schemas/Address" },
+          "contactInformation": { "$ref": "#/components/schemas/ContactInfo" }
+        }
+      },
+      "Subscriber": {
+        "type": "object",
+        "properties": {
+          "memberId": { "type": "string", "description": "Insurance member/subscriber ID" },
+          "firstName": { "type": "string" },
+          "lastName": { "type": "string" },
+          "dateOfBirth": { "type": "string", "description": "Date format: YYYYMMDD" },
+          "gender": { "type": "string", "enum": ["M", "F", "U"] },
+          "groupNumber": { "type": "string" },
+          "address": { "$ref": "#/components/schemas/Address" }
+        }
+      },
+      "Dependent": {
+        "type": "object",
+        "properties": {
+          "firstName": { "type": "string" },
+          "lastName": { "type": "string" },
+          "dateOfBirth": { "type": "string" },
+          "gender": { "type": "string", "enum": ["M", "F", "U"] },
+          "relationshipToSubscriber": { "type": "string" }
+        }
+      },
+      "Encounter": {
+        "type": "object",
+        "description": "Service/encounter details for the prior authorization request",
+        "properties": {
+          "serviceTypeCodes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Service type codes (e.g., '73' for MRI)"
+          },
+          "placeOfService": { "type": "string", "description": "CMS Place of Service code" },
+          "dateOfService": { "type": "string", "description": "Date format: YYYYMMDD" },
+          "endDateOfService": { "type": "string" },
+          "diagnosisCodes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DiagnosisCode" }
+          },
+          "procedureCodes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProcedureCode" }
+          },
+          "quantity": { "type": "string" },
+          "quantityType": { "type": "string", "enum": ["Days", "Units", "Visits"] },
+          "facilityType": { "type": "string" },
+          "levelOfService": { "type": "string" }
+        }
+      },
+      "DiagnosisCode": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "ICD-10-CM diagnosis code" },
+          "qualifier": { "type": "string", "enum": ["ABK", "ABF", "BK", "BF"], "description": "ABK=ICD-10-CM, ABF=ICD-10-PCS" },
+          "isPrimary": { "type": "boolean" }
+        }
+      },
+      "ProcedureCode": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "CPT/HCPCS procedure code" },
+          "qualifier": { "type": "string", "enum": ["HC", "HP", "ZZ"], "description": "HC=HCPCS, HP=HIPPS" },
+          "modifiers": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "quantity": { "type": "string" }
+        }
+      },
+      "ServiceDetail": {
+        "type": "object",
+        "properties": {
+          "serviceType": { "type": "string" },
+          "status": { "type": "string" },
+          "quantity": { "type": "string" },
+          "quantityType": { "type": "string" },
+          "procedureCode": { "type": "string" },
+          "diagnosisCode": { "type": "string" }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "properties": {
+          "address1": { "type": "string" },
+          "address2": { "type": "string" },
+          "city": { "type": "string" },
+          "state": { "type": "string" },
+          "zipCode": { "type": "string" }
+        }
+      },
+      "ContactInfo": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "phone": { "type": "string" },
+          "fax": { "type": "string" },
+          "email": { "type": "string" }
+        }
+      }
+    }
+  }
+}
