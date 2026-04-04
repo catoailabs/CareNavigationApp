@@ -1,57 +1,74 @@
-import { useRenderTool, useHumanInTheLoop } from "@copilotkit/react-core";
-import { Sources, Source } from "./sources";
+import { useRenderToolCall, useHumanInTheLoop } from "@copilotkit/react-core";
+import { Sources, Source, SourcesTrigger, SourcesContent } from "./sources";
 import { Artifact, ArtifactContent } from "./artifact";
 import { Task, TaskTrigger, TaskContent, TaskItem } from "./task";
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo } from "./attachments";
 import { TestResults, TestSuite, Test } from "./test-results";
 import { Terminal } from "./terminal";
 import { CodeBlock } from "./code-block";
-import { Sandbox, SandboxContent } from "./sandbox";
 import { Canvas } from "./canvas";
-import { Node, NodeHeader, NodeTitle } from "./node";
-import { Edge } from "./edge";
 import { Confirmation, ConfirmationTitle, ConfirmationRequest, ConfirmationActions, ConfirmationAction } from "./confirmation";
 import { Queue } from "./queue";
 import { EnvironmentVariables, EnvironmentVariableGroup, EnvironmentVariable } from "./environment-variables";
 import { Suggestion } from "./suggestion";
 import { Checkpoint } from "./checkpoint";
-import { Snippet } from "./snippet";
+import { Snippet, SnippetInput, SnippetCopyButton } from "./snippet";
 import { FileTree } from "./file-tree";
-import { AudioPlayer } from "./audio-player";
+import { AudioPlayer, AudioPlayerElement } from "./audio-player";
 import { Transcription } from "./transcription";
+
+interface SourceRecord {
+  title?: string;
+  url?: string;
+}
+
+interface WebhookEventRecord {
+  id?: string;
+  type?: string;
+}
 
 export function useStrandsToolRenderers() {
   
   // ==========================================================================
   // MEDICAL / LITERATURE
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "pubmed_fetch_citations",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-        <Sources isLoading={status !== "complete"} query={args?.query || "PubMed Citations"}>
-          {status === "complete" && result?.citations?.map((c: any, i: number) => (
-            <Source key={i} title={c.title} href={c.url} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.citations ? result.citations.length : 0}>
+            {status !== "complete" ? "Loading PubMed Citations..." : `Used ${result?.citations?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.citations?.map((c: SourceRecord, i: number) => (
+              <Source key={i} title={c.title} href={c.url} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "pubmed_fetch_related",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-        <Sources isLoading={status !== "complete"} query={`Related to ${args?.pmid || "Paper"}`}>
-          {status === "complete" && result?.papers?.map((p: any, i: number) => (
-            <Source key={i} title={p.title} href={p.url} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.papers ? result.papers.length : 0}>
+            {status !== "complete" ? `Finding related papers...` : `Used ${result?.papers?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.papers?.map((p: SourceRecord, i: number) => (
+              <Source key={i} title={p.title} href={p.url} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "pubmed_fetch_summaries",
     render: ({ status, result }) => (
       <div className="py-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -71,7 +88,7 @@ export function useStrandsToolRenderers() {
   // ==========================================================================
   // DICOM / IMAGING
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "dicom_store_orthanc",
     render: ({ args, status }) => (
       <div className="py-2 w-full max-w-sm">
@@ -85,7 +102,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "dicom_wado_retrieve",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -109,7 +126,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "dicom_to_png",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -131,29 +148,38 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "dicom_validate_tags",
-    render: ({ status, result }) => (
-      <div className="py-3">
-        <TestResults summary={{ passed: result?.passed || 0, failed: result?.failed || 0, skipped: 0, duration: 0 }}>
-          <TestSuite name="DICOM Validation" duration={0}>
-            <Test name="Tag Validation" status={status === "complete" ? ((result?.failed || 0) > 0 ? "failed" : "passed") : "passed"} duration={0} />
-          </TestSuite>
-        </TestResults>
-      </div>
-    ),
+    render: ({ status, result }) => {
+      const passed = result?.passed || 0;
+      const failed = result?.failed || 0;
+      const total = passed + failed;
+      return (
+        <div className="py-3">
+          <TestResults summary={{ passed, failed, skipped: 0, total, duration: 0 }}>
+            <TestSuite name="DICOM Validation" status={status === "complete" ? ((failed) > 0 ? "failed" : "passed") : "running"}>
+              <Test name="Tag Validation" status={status === "complete" ? ((failed) > 0 ? "failed" : "passed") : "running"} />
+            </TestSuite>
+          </TestResults>
+        </div>
+      );
+    },
   });
 
   // ==========================================================================
   // TELEPHONY / VOICE
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "listen",
     render: ({ status, result }) => (
       <div className="py-3 max-w-lg">
         {status === "complete" && result?.transcript ? (
           <div className="bg-primary/5 border border-primary/10 rounded-xl p-4 shadow-sm text-foreground leading-relaxed">
-            <Transcription text={result.transcript} />
+            <Transcription segments={result.segments || [{ text: result.transcript, startSecond: 0, endSecond: 1 }]} currentTime={0}>
+              {(segment, index) => (
+                <span key={index}>{segment.text} </span>
+              )}
+            </Transcription>
           </div>
         ) : (
           <div className="flex items-center gap-3 text-sm text-muted-foreground p-3 rounded-full bg-muted/30 w-fit">
@@ -169,13 +195,15 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "speak",
     render: ({ status, result }) => (
       <div className="py-3">
         {status === "complete" && result?.audio_url ? (
           <div className="border bg-background shadow-sm rounded-full p-1 max-w-sm">
-            <AudioPlayer src={result.audio_url} />
+            <AudioPlayer>
+              <AudioPlayerElement src={result.audio_url} />
+            </AudioPlayer>
           </div>
         ) : (
           <div className="text-sm text-muted-foreground animate-pulse flex items-center gap-2">
@@ -186,13 +214,15 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "playback_start",
     render: ({ status, result }) => (
       <div className="py-3">
         {status === "complete" && result?.stream_url ? (
           <div className="border bg-background shadow-sm rounded-full p-1 max-w-sm">
-             <AudioPlayer src={result.stream_url} autoPlay />
+             <AudioPlayer>
+              <AudioPlayerElement src={result.stream_url} />
+            </AudioPlayer>
           </div>
         ) : (
           <div className="text-sm text-muted-foreground animate-pulse flex items-center gap-2">
@@ -203,7 +233,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "playback_stop",
     render: ({ status }) => (
       <div className="py-2 px-3 bg-muted/40 rounded-md text-sm text-muted-foreground w-fit">
@@ -215,18 +245,21 @@ export function useStrandsToolRenderers() {
   // ==========================================================================
   // RESEARCH / IDE / WEB DATA
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "cursor",
     render: ({ args, status }) => (
       <div className="py-3">
         <div className="bg-muted/30 border border-muted-foreground/20 rounded-lg p-3 font-mono text-xs w-fit shadow-inner">
-          <Snippet text={status === "complete" ? `Cursor positioned at ${args?.line}:${args?.column} in ${args?.file}` : "Updating cursor..."} />
+          <Snippet code={status === "complete" ? `Cursor positioned at ${args?.line}:${args?.column} in ${args?.file}` : "Updating cursor..."}>
+            <SnippetInput />
+            <SnippetCopyButton />
+          </Snippet>
         </div>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "exa_get_contents",
     render: ({ status, result }) => (
       <div className="py-3 max-w-3xl">
@@ -245,46 +278,61 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "exa_search",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2">
-        <Sources isLoading={status !== "complete"} query={args?.query}>
-          {status === "complete" && result?.results?.map((r: any, i: number) => (
-            <Source key={i} title={r.title} href={r.url} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.results ? result.results.length : 0}>
+            {status !== "complete" ? "Searching..." : `Used ${result?.results?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.results?.map((r: SourceRecord, i: number) => (
+              <Source key={i} title={r.title} href={r.url} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "perplexity_search_api",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2">
-        <Sources isLoading={status !== "complete"} query={args?.query}>
-          {status === "complete" && result?.citations?.map((c: string, i: number) => (
-            <Source key={i} title={`Source ${i+1}`} href={c} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.citations ? result.citations.length : 0}>
+            {status !== "complete" ? "Searching..." : `Used ${result?.citations?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.citations?.map((c: string, i: number) => (
+              <Source key={i} title={`Source ${i+1}`} href={c} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "perplexity_sonar_pro",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2">
-        <Sources isLoading={status !== "complete"} query={args?.query}>
-          {status === "complete" && result?.citations?.map((c: string, i: number) => (
-            <Source key={i} title={`Source ${i+1}`} href={c} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.citations ? result.citations.length : 0}>
+            {status !== "complete" ? "Searching..." : `Used ${result?.citations?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.citations?.map((c: string, i: number) => (
+              <Source key={i} title={`Source ${i+1}`} href={c} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "tavily_extract",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -299,7 +347,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "tavily_map",
     render: ({ status, result }) => (
       <div className="py-3 max-w-xl">
@@ -310,14 +358,19 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "tavily_search",
-    render: ({ args, status, result }) => (
+    render: ({ status, result }) => (
       <div className="py-2">
-        <Sources isLoading={status !== "complete"} query={args?.query}>
-          {status === "complete" && result?.results?.map((r: any, i: number) => (
-            <Source key={i} title={r.title} href={r.url} />
-          ))}
+        <Sources>
+          <SourcesTrigger count={status === "complete" && result?.results ? result.results.length : 0}>
+            {status !== "complete" ? "Searching..." : `Used ${result?.results?.length || 0} sources`}
+          </SourcesTrigger>
+          <SourcesContent>
+            {status === "complete" && result?.results?.map((r: SourceRecord, i: number) => (
+              <Source key={i} title={r.title} href={r.url} />
+            ))}
+          </SourcesContent>
         </Sources>
       </div>
     ),
@@ -326,7 +379,7 @@ export function useStrandsToolRenderers() {
   // ==========================================================================
   // PROJECTS / CLOUD / SECRETS / WEBHOOKS
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "add_task_relationship",
     render: ({ status, args }) => (
       <div className="py-3">
@@ -337,7 +390,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "add_relationship",
     render: ({ status, args }) => (
       <div className="py-3">
@@ -348,7 +401,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "get_project_hierarchy",
     render: ({ status }) => (
       <div className="py-3 max-w-sm">
@@ -359,7 +412,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "cloud_storage_create_bucket",
     render: ({ args, status }) => (
       <div className="py-3 w-fit">
@@ -378,15 +431,15 @@ export function useStrandsToolRenderers() {
 
   useHumanInTheLoop({
     name: "cloud_storage_delete_object",
-    render: ({ args, status, approve, reject }) => (
+    render: ({ args, status, respond }) => (
       <div className="py-3">
-        <Confirmation className="max-w-md shadow-lg border-destructive/20 rounded-xl">
+        <Confirmation className="max-w-md shadow-lg border-destructive/20 rounded-xl" state={status === "executing" ? "approval-requested" : status === "complete" ? "output-available" : "input-streaming"}>
           <ConfirmationTitle className="text-destructive">Delete {args?.object_name} from {args?.bucket_name}?</ConfirmationTitle>
           <ConfirmationRequest>This action cannot be undone and will permanently remove the object.</ConfirmationRequest>
           {status === "executing" && (
             <ConfirmationActions className="pt-2">
-              <ConfirmationAction variant="outline" onClick={reject}>Cancel</ConfirmationAction>
-              <ConfirmationAction variant="destructive" onClick={approve}>Delete Object</ConfirmationAction>
+              <ConfirmationAction variant="outline" onClick={() => respond({ approved: false, reason: "User cancelled" })}>Cancel</ConfirmationAction>
+              <ConfirmationAction variant="destructive" onClick={() => respond({ approved: true })}>Delete Object</ConfirmationAction>
             </ConfirmationActions>
           )}
         </Confirmation>
@@ -394,7 +447,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "cloud_storage_download_file",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -415,7 +468,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "cloud_storage_list_objects",
     render: ({ status }) => (
       <div className="py-3 max-w-sm">
@@ -426,7 +479,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "cloud_storage_list_buckets",
     render: ({ status, result }) => (
       <div className="py-3 max-w-sm">
@@ -441,7 +494,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "cloud_storage_upload_file",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -464,15 +517,15 @@ export function useStrandsToolRenderers() {
 
   useHumanInTheLoop({
     name: "create_integration_secret",
-    render: ({ args, status, approve, reject }) => (
+    render: ({ args, status, respond }) => (
       <div className="flex flex-col gap-4 py-3">
         {status === "executing" && (
-          <Confirmation className="max-w-md shadow-lg border-primary/20 rounded-xl">
+          <Confirmation className="max-w-md shadow-lg border-primary/20 rounded-xl" state="approval-requested">
             <ConfirmationTitle>Store secret '{args?.secret_name}'?</ConfirmationTitle>
             <ConfirmationRequest>Allow agent to store this integration secret securely.</ConfirmationRequest>
             <ConfirmationActions className="pt-2">
-              <ConfirmationAction variant="outline" onClick={reject}>Reject</ConfirmationAction>
-              <ConfirmationAction onClick={approve}>Approve</ConfirmationAction>
+              <ConfirmationAction variant="outline" onClick={() => respond({ approved: false, reason: "User rejected" })}>Reject</ConfirmationAction>
+              <ConfirmationAction onClick={() => respond({ approved: true })}>Approve</ConfirmationAction>
             </ConfirmationActions>
           </Confirmation>
         )}
@@ -491,15 +544,15 @@ export function useStrandsToolRenderers() {
 
   useHumanInTheLoop({
     name: "delete_integration_secret",
-    render: ({ args, status, approve, reject }) => (
+    render: ({ args, status, respond }) => (
       <div className="py-3">
-        <Confirmation className="max-w-md shadow-lg border-destructive/20 rounded-xl">
+        <Confirmation className="max-w-md shadow-lg border-destructive/20 rounded-xl" state={status === "executing" ? "approval-requested" : "output-available"}>
           <ConfirmationTitle className="text-destructive">Delete secret '{args?.secret_name}'?</ConfirmationTitle>
           <ConfirmationRequest>This will permanently remove the stored integration secret.</ConfirmationRequest>
           {status === "executing" && (
             <ConfirmationActions className="pt-2">
-              <ConfirmationAction variant="outline" onClick={reject}>Cancel</ConfirmationAction>
-              <ConfirmationAction variant="destructive" onClick={approve}>Delete</ConfirmationAction>
+              <ConfirmationAction variant="outline" onClick={() => respond({ approved: false, reason: "User cancelled" })}>Cancel</ConfirmationAction>
+              <ConfirmationAction variant="destructive" onClick={() => respond({ approved: true })}>Delete</ConfirmationAction>
             </ConfirmationActions>
           )}
         </Confirmation>
@@ -507,7 +560,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "list_integration_secrets",
     render: ({ status, result }) => (
       <div className="py-3">
@@ -530,12 +583,12 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "get_webhook_events",
     render: ({ status, result }) => (
       <div className="py-3 w-full max-w-md">
         <Queue className="bg-background border rounded-xl shadow-sm overflow-hidden">
-          {status === "complete" ? result?.events?.map((e: any, i: number) => (
+          {status === "complete" ? result?.events?.map((e: WebhookEventRecord, i: number) => (
             <div key={i} className="text-sm p-3 border-b last:border-0 hover:bg-muted/50 transition-colors flex items-center justify-between">
               <span className="font-semibold">{e.type}</span>
               <span className="text-muted-foreground font-mono text-xs">{e.id}</span>
@@ -549,12 +602,12 @@ export function useStrandsToolRenderers() {
   // ==========================================================================
   // TOOLSETS / CATALOG
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "list_catalog_categories",
     render: ({ status, result }) => (
       <div className="flex flex-wrap gap-2 py-3">
         {status === "complete" ? result?.categories?.map((cat: string, i: number) => (
-          <Suggestion key={i} className="shadow-sm hover:shadow transition-shadow">{cat}</Suggestion>
+          <Suggestion key={i} suggestion={cat} className="shadow-sm hover:shadow transition-shadow" />
         )) : <div className="text-sm text-muted-foreground animate-pulse">Loading categories...</div>}
       </div>
     ),
@@ -563,56 +616,62 @@ export function useStrandsToolRenderers() {
   // ==========================================================================
   // SYSTEM / ORCHESTRATION / INTERNAL
   // ==========================================================================
-  useRenderTool({
+  useRenderToolCall({
     name: "asciimatics_ui",
     render: ({ status, result }) => (
       <div className="py-3 w-full max-w-2xl">
         <div className="rounded-xl overflow-hidden border shadow-md bg-black/95">
-          <Terminal output={status === "complete" ? result?.screen : "Rendering TUI..."} isStreaming={status !== "complete"} />
+          <Terminal output={status === "complete" ? result?.screen : "Rendering TUI..."} isStreaming={status !== "complete"} autoScroll={true} />
         </div>
       </div>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "calculator",
     render: ({ status, result }) => (
       status === "complete" ? (
         <div className="py-2">
-          <Snippet text={String(result?.value)} className="bg-muted/30 border-muted-foreground/20 text-primary font-mono shadow-sm" />
+          <Snippet code={String(result?.value)}>
+            <SnippetInput />
+            <SnippetCopyButton />
+          </Snippet>
         </div>
-      ) : null
+      ) : <></>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "current_time",
     render: ({ status, result }) => (
       status === "complete" ? (
         <div className="py-2">
-          <Snippet text={String(result?.time)} className="bg-muted/30 border-muted-foreground/20 font-mono shadow-sm" />
+          <Snippet code={String(result?.time)}>
+            <SnippetInput />
+            <SnippetCopyButton />
+          </Snippet>
         </div>
-      ) : null
+      ) : <></>
     ),
   });
 
   useHumanInTheLoop({
     name: "dialog",
-    render: ({ args, status, approve, reject }) => (
-      <Confirmation className="max-w-md">
+    render: ({ args, status, respond }) => (
+      <Confirmation className="max-w-md" state={status === "executing" ? "approval-requested" : "output-available"}>
         <ConfirmationTitle>{args?.title || "System Dialog"}</ConfirmationTitle>
         <ConfirmationRequest>{args?.message}</ConfirmationRequest>
         {status === "executing" && (
           <ConfirmationActions>
-            <ConfirmationAction variant="outline" onClick={reject}>Cancel</ConfirmationAction>
-            <ConfirmationAction onClick={approve}>OK</ConfirmationAction>
+            <ConfirmationAction variant="outline" onClick={() => respond({ approved: false, reason: "User cancelled" })}>Cancel</ConfirmationAction>
+            <ConfirmationAction onClick={() => respond({ approved: true })}>OK</ConfirmationAction>
           </ConfirmationActions>
         )}
       </Confirmation>
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "template",
     render: ({ args, status, result }) => (
       <div className="py-3 w-full max-w-3xl">
@@ -623,7 +682,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "batch",
     render: ({ status }) => (
       <div className="py-3 w-full max-w-sm">
@@ -637,7 +696,7 @@ export function useStrandsToolRenderers() {
     ),
   });
 
-  useRenderTool({
+  useRenderToolCall({
     name: "journal",
     render: ({ args, status }) => (
       <div className="py-2 w-full max-w-md">
@@ -656,7 +715,7 @@ export function useStrandsToolRenderers() {
 
   useHumanInTheLoop({
     name: "handoff_to_user",
-    render: ({ args, status, approve }) => (
+    render: ({ args, status, respond }) => (
       <div className="py-3 flex flex-col gap-4 max-w-md">
         <div className="flex items-center gap-3">
           <Checkpoint title="Action Required" className="text-primary" />
@@ -665,14 +724,14 @@ export function useStrandsToolRenderers() {
         
         <div className="flex flex-wrap gap-2 pl-6">
           {args?.suggested_actions?.map((action: string, i: number) => (
-            <Suggestion key={i} className="shadow-sm hover:shadow transition-shadow">{action}</Suggestion>
+            <Suggestion key={i} suggestion={action} className="shadow-sm hover:shadow transition-shadow" />
           ))}
         </div>
 
         {status === "executing" && (
            <div className="pl-6 pt-2">
              <ConfirmationActions>
-               <ConfirmationAction onClick={approve} className="w-full shadow-sm">Acknowledge & Continue</ConfirmationAction>
+               <ConfirmationAction onClick={() => respond({ approved: true })} className="w-full shadow-sm">Acknowledge & Continue</ConfirmationAction>
              </ConfirmationActions>
            </div>
         )}

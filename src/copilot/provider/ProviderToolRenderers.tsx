@@ -1,20 +1,41 @@
-import { useDefaultRenderTool, useRenderTool } from '@copilotkit/react-core/v2'
+import { useRenderToolCall } from '@copilotkit/react-core'
 import { InlineToolStatusCard, ProviderResultsGrid } from '@/components/provider/ProviderUi'
-import { PROVIDER_AGENT_ID } from './constants'
 import {
   normalizeDeepResearchResult,
   normalizeNpiLookupResult,
   parseToolResultObject,
 } from './normalizers'
-import {
-  npiLookupParametersSchema,
-  perplexityDeepResearchParametersSchema,
-  perplexitySearchParametersSchema,
-} from './schemas'
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`
 }
+
+type ToolParameter = {
+  name: string
+  type?: 'string' | 'number' | 'boolean' | 'object' | 'string[]' | 'number[]' | 'boolean[]' | 'object[]'
+  description?: string
+  required?: boolean
+  enum?: string[]
+  attributes?: ToolParameter[]
+}
+
+const npiLookupRenderParameters = [
+  { name: 'number', type: 'string', required: false, description: 'Direct NPI number lookup.' },
+  { name: 'first_name', type: 'string', required: false, description: 'Provider first name.' },
+  { name: 'last_name', type: 'string', required: false, description: 'Provider last name.' },
+  { name: 'organization_name', type: 'string', required: false, description: 'Organization or practice name.' },
+  { name: 'city', type: 'string', required: false, description: 'Provider city.' },
+  { name: 'state', type: 'string', required: false, description: 'Provider state.' },
+] satisfies ToolParameter[]
+
+const perplexitySearchRenderParameters = [
+  { name: 'query', type: 'string', required: false, description: 'Primary enrichment query.' },
+  { name: 'queries', type: 'string[]', required: false, description: 'Batch enrichment queries.' },
+] satisfies ToolParameter[]
+
+const perplexityDeepResearchRenderParameters = [
+  { name: 'topic', type: 'string', required: true, description: 'Research topic for the dossier.' },
+] satisfies ToolParameter[]
 
 function buildProviderLookupLabel(parameters: Record<string, unknown>) {
   const parts = [
@@ -45,23 +66,22 @@ function buildPerplexityLabel(parameters: Record<string, unknown>) {
 }
 
 export function ProviderToolRenderers() {
-  useRenderTool(
+  useRenderToolCall(
     {
       name: 'npiLookup',
-      agentId: PROVIDER_AGENT_ID,
-      parameters: npiLookupParametersSchema,
-      render: ({ status, parameters, result }) => {
+      parameters: npiLookupRenderParameters,
+      render: ({ status, args, result }) => {
         if (status !== 'complete') {
           return (
             <InlineToolStatusCard
               title="Provider discovery"
-              subtitle={`Running NPPES lookup for ${buildProviderLookupLabel(parameters)}.`}
+              subtitle={`Running NPPES lookup for ${buildProviderLookupLabel(args)}.`}
               status={status}
             />
           )
         }
 
-        const searchRun = normalizeNpiLookupResult(parameters, result)
+        const searchRun = normalizeNpiLookupResult(args, result)
         if (!searchRun) {
           return (
             <InlineToolStatusCard
@@ -75,20 +95,18 @@ export function ProviderToolRenderers() {
         return <ProviderResultsGrid searchRun={searchRun} />
       },
     },
-    [],
   )
 
-  useRenderTool(
+  useRenderToolCall(
     {
       name: 'perplexity_search_api',
-      agentId: PROVIDER_AGENT_ID,
-      parameters: perplexitySearchParametersSchema,
-      render: ({ status, parameters, result }) => {
+      parameters: perplexitySearchRenderParameters,
+      render: ({ status, args, result }) => {
         if (status !== 'complete') {
           return (
             <InlineToolStatusCard
               title="Web enrichment"
-              subtitle={`Searching provider web sources for ${buildPerplexityLabel(parameters)}.`}
+              subtitle={`Searching provider web sources for ${buildPerplexityLabel(args)}.`}
               status={status}
             />
           )
@@ -101,26 +119,24 @@ export function ProviderToolRenderers() {
         return (
           <InlineToolStatusCard
             title="Web enrichment"
-            subtitle={`Completed provider enrichment for ${buildPerplexityLabel(parameters)} with ${pluralize(groupCount, 'source group')} and ${pluralize(imageCount, 'image candidate')}.`}
+            subtitle={`Completed provider enrichment for ${buildPerplexityLabel(args)} with ${pluralize(groupCount, 'source group')} and ${pluralize(imageCount, 'image candidate')}.`}
             status="complete"
           />
         )
       },
     },
-    [],
   )
 
-  useRenderTool(
+  useRenderToolCall(
     {
       name: 'perplexity_deep_research',
-      agentId: PROVIDER_AGENT_ID,
-      parameters: perplexityDeepResearchParametersSchema,
-      render: ({ status, parameters, result }) => {
+      parameters: perplexityDeepResearchRenderParameters,
+      render: ({ status, args, result }) => {
         if (status !== 'complete') {
           return (
             <InlineToolStatusCard
               title="Deep research"
-              subtitle={`Research job requested for ${parameters.topic}.`}
+              subtitle={`Research job requested for ${args.topic}.`}
               status={status}
             />
           )
@@ -152,35 +168,6 @@ export function ProviderToolRenderers() {
         )
       },
     },
-    [],
-  )
-
-  useDefaultRenderTool(
-    {
-      render: ({ name, status, parameters, result }) => (
-        <InlineToolStatusCard
-          title={name}
-          subtitle={
-            status === 'complete'
-              ? typeof result === 'string' && result.trim().length > 0
-                ? `Completed with payload available.`
-                : 'Completed.'
-              : `Tool call is ${status}.`
-          }
-          status={status}
-          action={
-            status === 'complete' && parameters
-              ? (
-                <div className="rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-white/38">
-                  Fallback renderer
-                </div>
-              )
-              : undefined
-          }
-        />
-      ),
-    },
-    [],
   )
 
   return null

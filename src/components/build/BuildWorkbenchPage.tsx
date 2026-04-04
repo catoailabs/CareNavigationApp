@@ -177,9 +177,9 @@ function AmbientParticles() {
   const particlesRef = useRef<THREE.Points>(null)
   const particleCount = 1200
 
-  const [positions, colors] = useMemo(() => {
-    const positions = new Float32Array(particleCount * 3)
-    const colors = new Float32Array(particleCount * 3)
+  const [particleData] = useState(() => {
+    const pos = new Float32Array(particleCount * 3)
+    const cols = new Float32Array(particleCount * 3)
     const royalBlue = new THREE.Color('#2D3B87')
 
     for (let i = 0; i < particleCount; i++) {
@@ -187,22 +187,23 @@ function AmbientParticles() {
       const theta = Math.random() * Math.PI * 2
       const phi = Math.acos(Math.random() * 2 - 1)
 
-      positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta)
-      positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta)
-      positions[i * 3 + 2] = radius * Math.cos(phi)
+      pos[i * 3] = radius * Math.sin(phi) * Math.cos(theta)
+      pos[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta)
+      pos[i * 3 + 2] = radius * Math.cos(phi)
 
       const colorVariation = new THREE.Color().lerpColors(
         royalBlue,
         new THREE.Color('#FFFFFF'),
         Math.random() * 0.4
       )
-      colors[i * 3] = colorVariation.r
-      colors[i * 3 + 1] = colorVariation.g
-      colors[i * 3 + 2] = colorVariation.b
+      cols[i * 3] = colorVariation.r
+      cols[i * 3 + 1] = colorVariation.g
+      cols[i * 3 + 2] = colorVariation.b
     }
 
-    return [positions, colors]
-  }, [])
+    return { positions: pos, colors: cols }
+  })
+  const { positions, colors } = particleData
 
   useFrame((state) => {
     if (particlesRef.current) {
@@ -559,17 +560,16 @@ function useDevServerDetection() {
 export function BuildWorkbenchPage() {
   const { incrementNavigation, ensureActiveSession } = useBuildStore()
   const [leftOpen, setLeftOpen] = useState(true)
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewDismissed, setPreviewDismissed] = useState(false)
   
   // Dev server detection
   const { isRunning: isPreviewRunning, previewUrl, stopPreview } = useDevServerDetection()
-
-  // Auto-open preview when dev server is detected
-  useEffect(() => {
-    if (isPreviewRunning && previewUrl) {
-      setPreviewOpen(true)
-    }
-  }, [isPreviewRunning, previewUrl])
+  // Derive previewOpen from server state — no effect needed
+  const previewOpen = !previewDismissed && isPreviewRunning && Boolean(previewUrl)
+  const setPreviewOpen = (open: boolean) => {
+    if (!open) setPreviewDismissed(true)
+    else setPreviewDismissed(false)
+  }
 
 
   // Increment navigation counter on mount

@@ -155,8 +155,12 @@ export const InlineCitationCarouselIndex = ({
   ...props
 }: InlineCitationCarouselIndexProps) => {
   const api = useCarouselApi();
-  const [current, setCurrent] = useState(0);
-  const [count, setCount] = useState(0);
+  const [current, setCurrent] = useState(() =>
+    api ? api.selectedScrollSnap() + 1 : 0
+  );
+  const [count, setCount] = useState(() =>
+    api ? api.scrollSnapList().length : 0
+  );
 
   const syncState = useCallback(() => {
     if (!api) {
@@ -166,12 +170,20 @@ export const InlineCitationCarouselIndex = ({
     setCurrent(api.selectedScrollSnap() + 1);
   }, [api]);
 
+  // Sync state when api becomes available (derived state during render)
+  const [prevApi, setPrevApi] = useState(api);
+  if (api !== prevApi) {
+    setPrevApi(api);
+    if (api) {
+      setCount(api.scrollSnapList().length);
+      setCurrent(api.selectedScrollSnap() + 1);
+    }
+  }
+
   useEffect(() => {
     if (!api) {
       return;
     }
-
-    syncState();
 
     api.on("select", syncState);
 

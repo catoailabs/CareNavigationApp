@@ -3,6 +3,14 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any, AsyncIterator
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+AG_UI_SITE_PACKAGES = PROJECT_ROOT / ".venv312" / "lib" / "python3.12" / "site-packages"
+
+if AG_UI_SITE_PACKAGES.exists():
+    # Keep AG-UI importable while continuing to run the main agent on the active venv.
+    sys.path.append(str(AG_UI_SITE_PACKAGES))
 
 # Add local strands_tools to Python path
 sys.path.insert(
@@ -17,7 +25,7 @@ sys.path.insert(
 from strands import Agent, ModelRetryStrategy, tool
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.session import FileSessionManager
-from strands.models.litellm import LiteLLMModel
+from strands_xai import xAIModel
 from strands.hooks.events import (
     AfterModelCallEvent,
     BeforeModelCallEvent,
@@ -25,6 +33,9 @@ from strands.hooks.events import (
     AfterInvocationEvent,
 )
 from strands.hooks.registry import HookProvider, HookRegistry
+from xai_sdk.tools import web_search, x_search
+from ag_ui.core import RunAgentInput
+from ag_ui_strands import StrandsAgent as AgUiStrandsAgent, create_strands_app
 
 # --- OpenTelemetry ---
 from opentelemetry import trace
@@ -48,13 +59,11 @@ from strands_tools.multimodal.use_computer import use_computer as desktop
 from strands_tools.browser.local_chromium_browser import LocalChromiumBrowser
 from strands_tools.devops.python_repl import python_repl as code_interpreter
 
-browser_tool = LocalChromiumBrowser().browser
-PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_SESSION_ID = "robust-agent-session-002"
 DEFAULT_AGENT_ID = "robust-agent"
-DEFAULT_MODEL_ID = "openai/qwen/qwen3.5-397b-a17b"
-DEFAULT_API_BASE = "https://integrate.api.nvidia.com/v1"
+DEFAULT_MODEL_ID = "grok-4.20-0309-reasoning"
+DEFAULT_COPILOT_AGENT_NAME = "provider_research_agent"
 APPROVAL_REQUIRED_TOOLS = {
     "send_email",
     "make_call",
@@ -63,6 +72,26 @@ APPROVAL_REQUIRED_TOOLS = {
     "cloud_storage_delete_object",
     "dialog",
 }
+
+
+def _state_get(state, key: str, default=None):
+    if hasattr(state, "get"):
+        value = state.get(key)
+    elif isinstance(state, dict):
+        value = state.get(key, default)
+    else:
+        value = default
+    return default if value is None else value
+
+
+def _state_set(state, key: str, value) -> None:
+    if hasattr(state, "set"):
+        state.set(key, value)
+        return
+    if isinstance(state, dict):
+        state[key] = value
+        return
+    raise TypeError(f"Unsupported state container: {type(state)!r}")
 
 
 def load_env_file(path: Path = ENV_PATH, *, override: bool = False) -> None:
@@ -116,18 +145,18 @@ def checkpoint(note: str, tool_context) -> str:
     Args:
         note: A concise progress note. Start with 'DONE:' when finished, or 'HANDOFF:' if blocked.
     """
-    if "progress_ledger" not in tool_context.agent.state:
-        tool_context.agent.state["progress_ledger"] = []
+    ledger = _state_get(tool_context.agent.state, "progress_ledger", [])
+    if not isinstance(ledger, list):
+        ledger = []
 
-    ledger = tool_context.agent.state["progress_ledger"]
     entry = {"note": note}
     ledger.append(entry)
-    tool_context.agent.state["progress_ledger"] = ledger
+    _state_set(tool_context.agent.state, "progress_ledger", ledger)
 
     if note.startswith("DONE:"):
-        tool_context.agent.state["done"] = True
+        _state_set(tool_context.agent.state, "done", True)
     if note.startswith("HANDOFF:"):
-        tool_context.agent.state["handoff_summary"] = note
+        _state_set(tool_context.agent.state, "handoff_summary", note)
     return "Checkpoint recorded."
 
 
@@ -187,15 +216,15 @@ class LongRunningHooks(HookProvider):
             return
         if isinstance(request_state, dict) and request_state.get("stop_event_loop"):
             return
-        if state.get("done") or state.get("handoff_summary"):
+        if _state_get(state, "done", False) or _state_get(state, "handoff_summary"):
             return
 
-        followup_count = int(state.get("followup_count", 0))
+        followup_count = int(_state_get(state, "followup_count", 0) or 0)
         if followup_count >= self.max_followups:
-            state["handoff_summary"] = "HANDOFF: follow-up cap reached."
+            _state_set(state, "handoff_summary", "HANDOFF: follow-up cap reached.")
             return
 
-        state["followup_count"] = followup_count + 1
+        _state_set(state, "followup_count", followup_count + 1)
         event.resume = "Continue from the latest checkpoint."
 
 
@@ -369,6 +398,43 @@ Always use the following tools when appropriate:
 - browser: For web navigation
 
 You should detect user intents to create tools from natural language (like "create a tool that...", "build a tool for...", etc.) and handle the creation process automatically.
+
+Directly registered tools:
+- checkpoint: record meaningful progress, completion, or blocked handoff milestones.
+- handoff_to_user: return control when approval, credentials, or a product decision is required.
+- tool_catalog: discover and inspect the full catalog of tools, MCP servers, OpenAPI specs, and toolsets. This is the first stop for capability discovery.
+- mcp_client: connect to external MCP servers and use remote tools. Use only after catalog review shows a real gap or the task explicitly requires a known server.
+- editor: inspect and edit files with targeted, iterative changes.
+- shell: run local commands for inspection, builds, tests, or native CLI workflows when no dedicated tool is better.
+- environment: inspect or update environment variables; prefer masked reads for sensitive values.
+- dialog: collect structured user input or confirmation when needed to unblock safe progress.
+- use_computer: control the local GUI and take screenshots when browser or direct APIs are insufficient.
+- browser: interact with webpages and web apps for navigation, research, or UI workflows.
+- python_repl: run focused Python for computation, parsing, transformation, and analysis.
+
+Tool selection rules:
+1. Prefer the most direct existing tool for the job.
+2. Do not stretch one tool beyond its intended use case.
+3. Do not use meta-tooling blindly.
+4. For simple local coding tasks where editor, shell, or environment clearly fit, use them directly.
+5. Before using meta-tooling, connecting to MCP, loading tools, or creating tools, perform a full catalog review:
+   - call tool_catalog(action="list_categories")
+   - review relevant tools, mcp_servers, and openapi_specs across the catalog
+   - inspect promising entries with tool_catalog(action="get_tool", name=...)
+   - prefer an existing direct tool if one already matches the need
+6. Only after that review may you use tool_catalog to load or execute cataloged tools, use mcp_client, or create a new tool.
+7. Prefer a direct domain tool over browser automation or shell scripting when both are available.
+8. Prefer browser over use_computer for page-based tasks.
+9. Prefer editor over shell for file edits.
+10. Prefer environment over ad hoc shell commands for environment-variable work.
+11. Prefer python_repl for focused analysis or data transformation, not as a general file editor or shell replacement.
+12. If tool choice is ambiguous, inspect more catalog entries before acting.
+
+MCP best practices:
+- Keep remote tool usage narrow and deliberate.
+- Favor specifically needed tools over broad remote loading.
+- Use clear error handling and sensible timeouts.
+- Treat remote tools as higher-risk than local cataloged tools and justify their use briefly.
 """
 
 SYSTEM_PROMPT = [
@@ -380,17 +446,18 @@ SYSTEM_PROMPT = [
 def build_model():
     load_env_file()
 
-    return LiteLLMModel(
+    return xAIModel(
         client_args={
-            "api_key": require_env("NVIDIA_API_KEY"),
-            "api_base": os.getenv("NVIDIA_API_BASE", DEFAULT_API_BASE),
+            "api_key": require_env("XAI_API_KEY"),
         },
         model_id=os.getenv("STRANDS_MODEL_ID", DEFAULT_MODEL_ID),
+        xai_tools=[web_search(), x_search()],
+        include=["inline_citations"],
+        use_encrypted_content=True,
         params={
             "max_tokens": 16384,
             "temperature": 0.60,
             "top_p": 0.95,
-            "chat_template_kwargs": {"enable_thinking": True},
         },
     )
 
@@ -412,7 +479,7 @@ def build_agent(session_id: str | None = None) -> Agent:
             environment,
             dialog,
             desktop,
-            browser_tool,
+            LocalChromiumBrowser().browser,
             code_interpreter,
         ],
         conversation_manager=SummarizingConversationManager(
@@ -471,92 +538,33 @@ def print_registered_tools(agent: Agent) -> None:
 
 agent = build_agent()
 
-# Example usage
+
+class CopilotKitAgUiAgent(AgUiStrandsAgent):
+    """Expose the top-level Strands agent directly from agent.py for CopilotKit."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            agent=build_agent(current_session_id()),
+            name=os.getenv("COPILOTKIT_AGENT_NAME", DEFAULT_COPILOT_AGENT_NAME),
+            description=os.getenv("COPILOTKIT_AGENT_DESCRIPTION", "Strands agent"),
+        )
+
+    async def run(self, input_data: RunAgentInput) -> AsyncIterator[Any]:
+        thread_id = input_data.thread_id or current_session_id()
+        if thread_id not in self._agents_by_thread:
+            self._agents_by_thread[thread_id] = build_agent(thread_id)
+
+        async for event in super().run(input_data):
+            yield event
+
+
+agui_agent = CopilotKitAgUiAgent()
+agent_path = os.getenv("AGENT_PATH", "/")
+app = create_strands_app(agui_agent, agent_path)
+
 if __name__ == "__main__":
-    print("\nMeta-Tooling Demonstration (Improved)")
-    print("==================================")
-    print("Commands:")
-    print("  • create <description> - Create a new tool")
-    print("  • make a tool that <description>")
-    print("  • list tools - Show currently registered tools")
-    print("  • show session - Show the active session ID")
-    print("  • session <id> - Switch to a different session")
-    print("  • reload env - Reload .env and rebuild the agent")
-    print("  • exit - Exit the program")
+    import uvicorn
 
-    # Interactive loop
-    active_session_id = current_session_id()
-    while True:
-        try:
-            user_input = input("\n> ")
-            normalized_input = user_input.strip()
-            lower_input = normalized_input.lower()
-
-            # Handle exit command
-            if lower_input == "exit":
-                print("\nGoodbye!")
-                break
-            elif lower_input == "list tools":
-                print_registered_tools(agent)
-                continue
-            elif lower_input == "show session":
-                print(f"\nActive session: {active_session_id}")
-                continue
-            elif lower_input.startswith("session "):
-                requested_session_id = normalized_input.split(" ", 1)[1]
-                active_session_id = sanitize_session_id(requested_session_id)
-                os.environ["STRANDS_SESSION_ID"] = active_session_id
-                agent = build_agent(active_session_id)
-                print(f"\nSwitched to session: {active_session_id}")
-                continue
-            elif lower_input == "reload env":
-                load_env_file(override=True)
-                active_session_id = current_session_id()
-                agent = build_agent(active_session_id)
-                print(
-                    f"\nReloaded {ENV_PATH.name} and rebuilt agent for session: "
-                    f"{active_session_id}"
-                )
-                continue
-
-            # Regular interaction - let the agent's system prompt handle tool creation detection
-            else:
-                prompt_text = build_prompt(normalized_input)
-                print("Starting agent stream_async...")
-
-                async def run_agent():
-                    async for event in agent.stream_async(prompt_text):
-                        if event.get("reasoning"):
-                            reasoning_text = event["reasoning"].get("reasoningText", "")
-                            if reasoning_text:
-                                print(
-                                    f"[THINKING]: {reasoning_text}", end="", flush=True
-                                )
-                        elif "data" in event:
-                            data = event["data"]
-                            if isinstance(data, str):
-                                print(data, end="", flush=True)
-                        elif "current_tool_use" in event:
-                            tool_info = event["current_tool_use"]
-                            tool_name = tool_info.get("name", "")
-                            if tool_name:
-                                print(f"\n[TOOL]: {tool_name}", flush=True)
-                        elif event.get("init_event_loop"):
-                            print("[STATUS]: Event loop initialized", flush=True)
-                        elif event.get("start_event_loop"):
-                            print("[STATUS]: Event loop cycle starting", flush=True)
-                        elif "result" in event:
-                            print("\n[STATUS]: Agent completed with result", flush=True)
-                        elif event.get("force_stop"):
-                            reason = event.get("force_stop_reason", "unknown")
-                            print(f"\n[STATUS]: Force-stopped: {reason}", flush=True)
-                    print("\n\nAgent loop completed.")
-
-                asyncio.run(run_agent())
-
-        except KeyboardInterrupt:
-            print("\n\nExecution interrupted. Exiting...")
-            break
-        except Exception as e:
-            print(f"\nAn error occurred: {str(e)}")
-            print("Please try a different request.")
+    port = int(os.getenv("PORT", 8000))
+    print(f"Starting AG-UI Strands server on port {port}...")
+    uvicorn.run("agent:app", host="127.0.0.1", port=port, reload=True)

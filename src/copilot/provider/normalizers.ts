@@ -239,11 +239,16 @@ function createResearchSections(report: string | null): ProviderResearchSection[
   const lines = report.split(/\r?\n/)
   const sections: ProviderResearchSection[] = []
   let current: ProviderResearchSection | null = null
+  const pushSection = (section: ProviderResearchSection | null) => {
+    if (section && section.content.trim()) {
+      sections.push(section)
+    }
+  }
 
   lines.forEach((line) => {
     const headingMatch = line.match(/^#{2,3}\s+(.+)$/)
     if (headingMatch) {
-      if (current && current.content.trim()) sections.push(current)
+      pushSection(current)
       current = {
         id: headingMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         heading: headingMatch[1].trim(),
@@ -263,7 +268,7 @@ function createResearchSections(report: string | null): ProviderResearchSection[
     current.content = current.content.length > 0 ? `${current.content}\n${line}` : line
   })
 
-  if (current && current.content.trim()) sections.push(current)
+  pushSection(current)
   return sections
 }
 

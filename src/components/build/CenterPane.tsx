@@ -85,7 +85,7 @@ export function CenterPane() {
   }
 
   return (
-    <div className="relative flex flex-1 min-w-0 flex-col overflow-hidden">
+    <div className="relative flex flex-1 min-w-0 flex-col">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.14),transparent_58%)]" />
       <div className="relative flex h-full min-h-0 flex-col">
         <div className="flex items-center justify-between gap-4 border-b border-surface-800/90 bg-surface-900/55 px-6 py-4 backdrop-blur-xl">
@@ -107,8 +107,8 @@ export function CenterPane() {
           </div>
         </div>
 
-        <div className="relative flex-1 min-h-0">
-          <ProviderThreadStateProvider threadId={activeSessionId}>
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          <ProviderThreadStateProvider key={activeSessionId} threadId={activeSessionId}>
             <SessionPromptSync threadId={activeSessionId} />
 
             <CopilotChat

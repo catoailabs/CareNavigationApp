@@ -146,16 +146,25 @@ class _CatalogEntry:
 def _project_root() -> Path:
     here = Path(__file__).resolve()
     for parent in here.parents:
-        if (parent / "deploy" / "docker-compose.yml").exists():
+        if (parent / "tools" / "ronbrowser_agent_tools" / "src" / "strands_tools").exists():
+            return parent
+        if (parent / "src" / "strands_tools").exists():
+            return parent
+    for parent in here.parents:
+        if any((parent / marker).exists() for marker in (".git", "package.json", "pyproject.toml")):
             return parent
     return here.parents[-1]
 
 
 def _inventory_root() -> Path:
     root = _project_root()
-    vendored = root / "tools" / "ronbrowser_agent_tools" / "src" / "strands_tools"
-    if vendored.exists():
-        return vendored
+    for candidate in (
+        root / "tools" / "ronbrowser_agent_tools" / "src" / "strands_tools",
+        root / "src" / "strands_tools",
+        root / "strands_tools",
+    ):
+        if candidate.exists():
+            return candidate
     return root / "strands_tools"
 
 

@@ -1,4 +1,6 @@
 import { useEffect, useRef, type ComponentProps, type ReactNode } from 'react'
+import type { UIMessage } from 'ai'
+import { isToolUIPart } from 'ai'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -24,6 +26,9 @@ import {
 } from '@copilotkit/react-core/v2'
 import { cn } from '@/utils/cn'
 import { ProviderEmptyHint, SurfaceCard } from './ProviderUi'
+import { StrandsChainOfThought } from '@/components/ai-elements/strands-chain-of-thought'
+import { Suggestions, Suggestion } from '@/components/ai-elements/suggestion'
+import { useSuggestions } from '@copilotkit/react-core/v2'
 
 type WelcomeScreenProps = ComponentProps<typeof CopilotChatView.WelcomeScreen>
 
@@ -61,7 +66,12 @@ function ProviderAssistantMessageBase({
   message,
   messages = [],
 }: CopilotChatAssistantMessageProps) {
+  const uiMessage = message as unknown as UIMessage
   const hasText = Boolean(message.content?.trim())
+  const hasToolCalls = uiMessage.parts?.some((p) => isToolUIPart(p)) ?? false
+  const hasChainOfThought = hasToolCalls || uiMessage.parts?.some(
+    (p) => isToolUIPart(p) || p.type === 'reasoning'
+  )
 
   return (
     <AssistantChrome>
@@ -76,6 +86,10 @@ function ProviderAssistantMessageBase({
             </SurfaceCard>
           </div>
         ) : null}
+
+        {hasChainOfThought && (
+          <StrandsChainOfThought message={uiMessage} isStreaming={true} />
+        )}
 
         <CopilotChatToolCallsView message={message} messages={messages} />
       </div>
@@ -162,6 +176,7 @@ function ProviderComposerBase({
   onChange,
 }: CopilotChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const { suggestions } = useSuggestions()
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -180,6 +195,23 @@ function ProviderComposerBase({
     <div className="absolute inset-x-0 bottom-0 z-20 px-4 pb-5 pt-6 md:px-6">
       <div className="mx-auto max-w-3xl">
         <div className="absolute -inset-4 rounded-[28px] bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.22)_0%,rgba(76,29,149,0.12)_42%,transparent_70%)] opacity-70" />
+
+        {suggestions.length > 0 && (
+          <Suggestions className="mb-3">
+            {suggestions.map((suggestion, index) => (
+              <Suggestion
+                key={index}
+                suggestion={suggestion.message}
+                onClick={(s) => {
+                  onChange?.(s)
+                  setTimeout(() => submit(), 50)
+                }}
+                className="border-white/[0.08] bg-white/[0.04] text-white/80 hover:text-white hover:bg-white/[0.08]"
+              />
+            ))}
+          </Suggestions>
+        )}
+
         <SurfaceCard className="relative overflow-hidden">
           <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(99,102,241,0.06),transparent_48%,rgba(76,29,149,0.08))]" />
           <div className="relative flex items-end gap-3 px-4 py-4">
@@ -246,9 +278,26 @@ export const ProviderComposer = Object.assign(ProviderComposerBase, {
 })
 
 export function ProviderWelcomeScreen({ input }: WelcomeScreenProps) {
+  const { suggestions } = useSuggestions()
+
   return (
     <div className="h-full">
       <ProviderEmptyHint />
+      {suggestions.length > 0 && (
+        <div className="absolute inset-x-0 bottom-24 z-20 px-4 md:px-6">
+          <div className="mx-auto max-w-3xl">
+            <Suggestions>
+              {suggestions.map((suggestion, index) => (
+              <Suggestion
+                key={index}
+                suggestion={suggestion.message}
+                className="border-white/[0.08] bg-white/[0.04] text-white/80 hover:text-white hover:bg-white/[0.08]"
+              />
+              ))}
+            </Suggestions>
+          </div>
+        </div>
+      )}
       <div className="absolute inset-x-0 bottom-0">{input}</div>
     </div>
   )

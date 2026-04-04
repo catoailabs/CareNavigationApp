@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
 import { useAgent, UseAgentUpdate, useAgentContext, useCopilotKit } from '@copilotkit/react-core/v2'
 import { PROVIDER_AGENT_ID, PROVIDER_COMPARE_LIMIT } from './constants'
 import {
@@ -71,9 +71,7 @@ async function runAgentPrompt(
   prompt: string,
   agent: ReturnType<typeof useAgent>['agent'],
   runAgent: ReturnType<typeof useCopilotKit>['copilotkit']['runAgent'],
-  threadId: string,
 ) {
-  agent.threadId = threadId
   agent.addMessage({
     id: crypto.randomUUID(),
     role: 'user',
@@ -103,18 +101,6 @@ export function ProviderThreadStateProvider({
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isCompareOpen, setIsCompareOpen] = useState(false)
   const [isResearchOpen, setIsResearchOpen] = useState(false)
-
-  useEffect(() => {
-    agent.threadId = threadId
-  }, [agent, threadId])
-
-  useEffect(() => {
-    setSelectedProviderNpi(null)
-    setComparedProviderNpis([])
-    setIsProfileOpen(false)
-    setIsCompareOpen(false)
-    setIsResearchOpen(false)
-  }, [threadId])
 
   const snapshot = useMemo(() => createProviderThreadSnapshot(agent.messages), [agent.messages])
 
@@ -155,8 +141,8 @@ export function ProviderThreadStateProvider({
     setSelectedProviderNpi(provider.npi)
     setIsProfileOpen(true)
     if (provider.generalSources.length > 0 || agent.isRunning) return
-    await runAgentPrompt(buildProfilePrompt(provider), agent, copilotkit.runAgent.bind(copilotkit), threadId)
-  }, [agent, copilotkit, threadId])
+    await runAgentPrompt(buildProfilePrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
+  }, [agent, copilotkit])
 
   const closeProfile = useCallback(() => {
     setIsProfileOpen(false)
@@ -199,25 +185,25 @@ export function ProviderThreadStateProvider({
     if (agent.isRunning) return
 
     if (!existingJob || ['FAILED', 'TIMED_OUT', 'CANCELLED'].includes(existingJob.status)) {
-      await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit), threadId)
+      await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
       return
     }
 
     if (existingJob.status !== 'COMPLETED') {
-      await runAgentPrompt(buildDeepResearchFetchPrompt(existingJob), agent, copilotkit.runAgent.bind(copilotkit), threadId)
+      await runAgentPrompt(buildDeepResearchFetchPrompt(existingJob), agent, copilotkit.runAgent.bind(copilotkit))
     }
-  }, [agent, copilotkit, snapshot.researchJobs, threadId])
+  }, [agent, copilotkit, snapshot.researchJobs])
 
   const refreshResearch = useCallback(async (provider: ProviderSearchResult, job: ProviderResearchJob | null) => {
     setSelectedProviderNpi(provider.npi)
     setIsResearchOpen(true)
     if (agent.isRunning) return
     if (job?.requestId) {
-      await runAgentPrompt(buildDeepResearchFetchPrompt(job), agent, copilotkit.runAgent.bind(copilotkit), threadId)
+      await runAgentPrompt(buildDeepResearchFetchPrompt(job), agent, copilotkit.runAgent.bind(copilotkit))
       return
     }
-    await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit), threadId)
-  }, [agent, copilotkit, threadId])
+    await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
+  }, [agent, copilotkit])
 
   const closeResearch = useCallback(() => {
     setIsResearchOpen(false)
@@ -268,10 +254,4 @@ export function ProviderThreadStateProvider({
   )
 }
 
-export function useProviderThreadState() {
-  const value = useContext(ProviderThreadStateContext)
-  if (!value) {
-    throw new Error('useProviderThreadState must be used within ProviderThreadStateProvider')
-  }
-  return value
-}
+export { ProviderThreadStateContext }

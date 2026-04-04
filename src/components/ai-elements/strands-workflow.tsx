@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { Position } from "@xyflow/react";
+import { useState } from "react";
+import { Position, type Edge as FlowEdge, type Node as FlowNode, type NodeProps as FlowNodeProps } from "@xyflow/react";
 import { Canvas } from "./canvas";
 import { 
   Node, 
@@ -10,19 +10,67 @@ import {
   NodeDescription, 
   NodeContent 
 } from "./node";
-import { Edge } from "./edge";
 import { Controls } from "./controls";
 import { Panel } from "./panel";
 import { Toolbar } from "./toolbar";
 import { Connection } from "./connection";
 import { Agent, AgentHeader, AgentContent, AgentInstructions } from "./agent";
 import { Task, TaskTrigger, TaskContent, TaskItem, TaskItemFile } from "./task";
-import { EyeIcon, PauseIcon, CheckCircle, FileIcon, BrainIcon, WrenchIcon, Spinner } from "lucide-react";
+import { EyeIcon, PauseIcon, CheckCircle, FileIcon, BrainIcon, WrenchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+interface WorkflowToolArgs {
+  path?: string;
+  query?: string;
+}
+
+interface ReasoningWorkflowEvent {
+  type: "reasoning";
+  text?: string;
+}
+
+interface ToolWorkflowEvent {
+  type: "tool";
+  status?: string;
+  toolName?: string;
+  args?: WorkflowToolArgs;
+}
+
+interface HandoffWorkflowEvent {
+  type: "handoff";
+  targetAgent?: string;
+}
+
+type WorkflowEvent = ReasoningWorkflowEvent | ToolWorkflowEvent | HandoffWorkflowEvent;
+
+interface AgentState {
+  agentName?: string;
+  model?: string;
+  systemPrompt?: string;
+  events?: WorkflowEvent[];
+}
+
+interface LatestWorkflowEvent {
+  type?: string;
+  source?: string;
+  target?: string;
+}
+
+interface AgentWorkflowNodeData extends Record<string, unknown> {
+  activeAgentId?: string | null;
+  agentName?: string;
+  role?: string;
+  status?: string;
+  inspectAgent: (id: string) => void;
+  pauseAgent: (id: string) => void;
+}
+
+type WorkflowNode = FlowNode<Record<string, unknown>>;
+type WorkflowEdge = FlowEdge;
+
 // Custom Agent Node for React Flow
-export const AgentWorkflowNode = ({ data, selected }: any) => {
-  const isActive = data.id === data.activeAgentId;
+export const AgentWorkflowNode = ({ id, data, selected }: FlowNodeProps<FlowNode<AgentWorkflowNodeData, "agentNode">>) => {
+  const isActive = id === data.activeAgentId;
 
   return (
     <Node handles={{ target: true, source: true }} className={isActive ? "ring-2 ring-primary" : ""}>
@@ -38,10 +86,10 @@ export const AgentWorkflowNode = ({ data, selected }: any) => {
       
       <Toolbar isVisible={selected || isActive} position={Position.Bottom}>
         <div className="flex gap-1 bg-background border p-1 rounded-md shadow-sm">
-          <Button size="sm" variant="ghost" onClick={() => data.inspectAgent(data.id)}>
+          <Button size="sm" variant="ghost" onClick={() => data.inspectAgent(id)}>
             <EyeIcon className="size-3 mr-2" /> Inspect Log
           </Button>
-          <Button size="sm" variant="destructive" onClick={() => data.pauseAgent(data.id)}>
+          <Button size="sm" variant="destructive" onClick={() => data.pauseAgent(id)}>
             <PauseIcon className="size-3" />
           </Button>
         </div>
@@ -53,13 +101,13 @@ export const AgentWorkflowNode = ({ data, selected }: any) => {
 // Note: React Flow requires custom node types to be defined outside the render cycle
 const nodeTypes = {
   agentNode: AgentWorkflowNode,
-};
+} as const;
 
 interface StrandsMultiAgentWorkflowProps {
-  nodes: any[];
-  edges: any[];
-  latestEvent?: any;
-  agentsDataMap: Record<string, any>; // Maps nodeId to execution log / system prompt
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  latestEvent?: LatestWorkflowEvent;
+  agentsDataMap: Record<string, AgentState>; // Maps nodeId to execution log / system prompt
 }
 
 export function StrandsMultiAgentWorkflow({ 
@@ -140,7 +188,7 @@ export function StrandsMultiAgentWorkflow({
                   <TaskTrigger title="Subagent Actions" />
                   <TaskContent className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-2">
                     {/* Render every granular action from the Strands event stream scoped to this node */}
-                    {activeAgentState.events?.map((event: any, idx: number) => {
+                    {activeAgentState.events?.map((event: WorkflowEvent, idx: number) => {
                       
                       // 1. Reasoning / Thought Block
                       if (event.type === 'reasoning') {

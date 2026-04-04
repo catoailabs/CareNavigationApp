@@ -1,5 +1,5 @@
-import React from "react";
-import type { UIMessage } from "ai";
+import type { UIMessage, DynamicToolUIPart } from "ai";
+import { isToolUIPart } from "ai";
 import {
   BrainIcon,
   CheckCircle,
@@ -76,16 +76,22 @@ import { PackageInfo, PackageInfoDescription } from "./package-info";
 import { SchemaDisplay, SchemaDisplayDescription } from "./schema-display";
 import { TestResults, TestSuite, Test } from "./test-results";
 import { Agent, AgentHeader, AgentContent, AgentInstructions } from "./agent";
-import { JSXPreview, JSXPreviewContent, JSXPreviewError } from "./jsx-preview";
 
 interface StrandsChainOfThoughtProps {
   message: UIMessage;
   isStreaming?: boolean;
 }
 
+interface SearchSource {
+  url?: string;
+  link?: string;
+  title?: string;
+  name?: string;
+}
+
 export function StrandsChainOfThought({ message, isStreaming = false }: StrandsChainOfThoughtProps) {
   const timelineParts = message.parts?.filter(
-    (part) => part.type === "reasoning" || part.type === "tool-invocation"
+    (part) => part.type === "reasoning" || isToolUIPart(part)
   ) || [];
 
   if (timelineParts.length === 0) return null;
@@ -104,18 +110,22 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
               <ChainOfThoughtStep
                 key={`reasoning-${index}`}
                 icon={BrainIcon}
-                label={part.reasoning || "Thinking..."}
+                label={"Thinking..."}
                 status={status}
               />
             );
           }
 
           // B. Tool Invocations
-          if (part.type === "tool-invocation") {
-            const toolName = part.toolInvocation.toolName;
-            const args = part.toolInvocation.args as any;
-            const result = part.toolInvocation.state === 'result' ? part.toolInvocation.result : undefined;
-            const isToolComplete = part.toolInvocation.state === "result";
+          if (isToolUIPart(part)) {
+            const toolPart = part as DynamicToolUIPart;
+            const toolName = toolPart.toolName;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const args = (toolPart.input || {}) as Record<string, any>;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const result = (toolPart.output || {}) as Record<string, any>;
+            const state = toolPart.state;
+            const isToolComplete = state === "output-available" || state === "output-error" || state === "output-denied";
             const nameLower = toolName.toLowerCase();
 
             // 1. Agent.tsx (Subagents)
@@ -126,7 +136,7 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
                     <Agent>
                       <AgentHeader name={args.agent_name || toolName} model={args.model || "default-model"} />
                       <AgentContent>
-                        <AgentInstructions className="text-xs">{args.instructions || "Executing delegated task..."}</AgentInstructions>
+                        <AgentInstructions className="text-xs">{String(args.instructions || "Executing delegated task...")}</AgentInstructions>
                       </AgentContent>
                     </Agent>
                   </div>
@@ -135,21 +145,47 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
             }
 
             // 2. ChainOfThoughtSearchResults (Web and Doc Searches)
-            if (["search_web", "search_docs", "search_health", "search_pubmed", "search_clinical_trials"].some(name => nameLower.includes(name))) {
+            if (["search_web", "search_docs", "search_health", "search_pubmed", "search_clinical_trials", "x_search", "web_search"].some(name => nameLower.includes(name))) {
+              const query = args.query || args.q || args.search_query || toolName;
               return (
-                <ChainOfThoughtStep key={`tool-${index}`} icon={SearchIcon} label={`Searching: ${args.query || toolName}`} status={isToolComplete ? "complete" : "active"}>
-                  <div className="mt-2 ml-4">
+                <ChainOfThoughtStep key={`tool-${index}`} icon={SearchIcon} label={`Searching: ${query}`} status={isToolComplete ? "complete" : "active"}>
+                  <div className="mt-2 ml-4 flex flex-col gap-2">
+                    <Task defaultOpen={!isToolComplete}>
+                      <TaskTrigger title={`Executing ${toolName}`} />
+                      <TaskContent>
+                        <TaskItem>
+                          <span className="text-sm bg-muted px-1 py-0.5 rounded">{query}</span>
+                        </TaskItem>
+                        {isToolComplete && (
+                          <TaskItem><span className="inline-flex items-center gap-2 text-muted-foreground text-xs"><CheckCircle className="size-3 text-green-500" /> Search execution complete</span></TaskItem>
+                        )}
+                      </TaskContent>
+                    </Task>
+                    
                     {isToolComplete && result?.sources && Array.isArray(result.sources) && (
                       <ChainOfThoughtSearchResults>
-                        {result.sources.slice(0, 5).map((src: any, i: number) => (
-                          <ChainOfThoughtSearchResult key={i} href={src.url || src.link || "#"}>
-                            {src.title || src.name || src.url || "Source Result"}
+                        {(result.sources as SearchSource[]).slice(0, 5).map((src: SearchSource, i: number) => (
+                          <ChainOfThoughtSearchResult key={i} title={src.url || src.link || undefined}>
+                            <a href={src.url || src.link || "#"} target="_blank" rel="noreferrer" className="hover:text-primary">
+                              {src.title || src.name || src.url || "Source Result"}
+                            </a>
                           </ChainOfThoughtSearchResult>
                         ))}
                       </ChainOfThoughtSearchResults>
                     )}
-                    {isToolComplete && !result?.sources && (
-                      <div className="text-xs text-muted-foreground">Search completed.</div>
+                    {isToolComplete && result?.results && Array.isArray(result.results) && (
+                      <ChainOfThoughtSearchResults>
+                        {(result.results as SearchSource[]).slice(0, 5).map((src: SearchSource, i: number) => (
+                          <ChainOfThoughtSearchResult key={i} title={src.url || src.link || undefined}>
+                            <a href={src.url || src.link || "#"} target="_blank" rel="noreferrer" className="hover:text-primary">
+                              {src.title || src.name || src.url || "Source Result"}
+                            </a>
+                          </ChainOfThoughtSearchResult>
+                        ))}
+                      </ChainOfThoughtSearchResults>
+                    )}
+                    {isToolComplete && !result?.sources && !result?.results && (
+                      <div className="text-xs text-muted-foreground mt-1">Search completed.</div>
                     )}
                   </div>
                 </ChainOfThoughtStep>
@@ -192,7 +228,7 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
               return (
                 <ChainOfThoughtStep key={`tool-${index}`} icon={MessageSquareIcon} label="Awaiting User Input" status={isToolComplete ? "complete" : "active"}>
                   <div className="mt-3 ml-4">
-                    <Confirmation className="w-full max-w-md">
+                    <Confirmation className="w-full max-w-md" state={isToolComplete ? "output-available" : "input-available"}>
                       <ConfirmationTitle>{args.question || "Confirmation Required"}</ConfirmationTitle>
                       <ConfirmationRequest>Please review the requested action before the agent proceeds.</ConfirmationRequest>
                       {!isToolComplete && (
@@ -228,7 +264,7 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
                 <ChainOfThoughtStep key={`tool-${index}`} icon={TerminalIcon} label="Isolated Sandbox Execution" status={isToolComplete ? "complete" : "active"}>
                   <div className="mt-3 ml-4">
                     <Sandbox defaultOpen={true}>
-                      <SandboxHeader title="Code Interpreter" />
+                      <SandboxHeader title="Code Interpreter" state={isToolComplete ? "output-available" : "input-available"} />
                       <SandboxContent>
                         <CodeBlock code={args.code || ""} language="python" />
                         {isToolComplete && <div className="mt-2 text-xs bg-muted p-2 rounded">Output: {result?.stdout || result?.error || "Success"}</div>}
@@ -244,7 +280,7 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
               return (
                 <ChainOfThoughtStep key={`tool-${index}`} icon={FileIcon} label="Managing Dependencies" status="complete">
                   <div className="mt-3 ml-4">
-                    <PackageInfo name={args.package_name || args.package || args.dependency || "unknown-package"} version={args.version || "latest"}>
+                    <PackageInfo name={args.package_name || args.package || args.dependency || "unknown-package"} newVersion={args.version || "latest"}>
                       <PackageInfoDescription>Installed during agent execution.</PackageInfoDescription>
                     </PackageInfo>
                   </div>
@@ -257,7 +293,8 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
               return (
                 <ChainOfThoughtStep key={`tool-${index}`} icon={GlobeIcon} label={`Network Request: ${args.url || 'API'}`} status={isToolComplete ? "complete" : "active"}>
                   <div className="mt-3 ml-4">
-                    <SchemaDisplay method={args.method?.toUpperCase() || "GET"} path={args.url || "/"}>
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    <SchemaDisplay method={String(args.method || "GET").toUpperCase() as any} path={args.url || "/"}>
                       <SchemaDisplayDescription>{isToolComplete ? "Status: " + (result?.status || result?.status_code || 200) : "Fetching..."}</SchemaDisplayDescription>
                     </SchemaDisplay>
                   </div>
@@ -271,9 +308,9 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
                 <ChainOfThoughtStep key={`tool-${index}`} icon={CheckCircle} label="Executing Test Suite" status={isToolComplete ? "complete" : "active"}>
                   <div className="mt-3 ml-4">
                     {isToolComplete && result ? (
-                      <TestResults summary={{ passed: result.passed || 1, failed: result.failed || 0, skipped: 0, duration: result.duration || 0 }}>
-                        <TestSuite name="Automated Tests" duration={result.duration || 0}>
-                           <Test name="Agent execution" status={(result.failed || 0) > 0 ? "failed" : "passed"} duration={result.duration || 0} />
+                      <TestResults summary={{ passed: Number(result.passed || 1), failed: Number(result.failed || 0), skipped: 0, total: Number(result.passed || 0) + Number(result.failed || 0) }}>
+                        <TestSuite name="Automated Tests" status={Number(result.failed || 0) > 0 ? "failed" : "passed"}>
+                           <Test name="Agent execution" status={Number(result.failed || 0) > 0 ? "failed" : "passed"} />
                         </TestSuite>
                       </TestResults>
                     ) : (
@@ -339,7 +376,7 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
                   <div className="mt-3 ml-4">
                     {isToolComplete && (result?.url || result?.image_url) && (
                       <Attachments variant="inline">
-                        <Attachment data={{ id: part.toolInvocation.toolCallId, type: "file", url: result.url || result.image_url, mediaType: "image/png", filename: "output.png" }}>
+                        <Attachment data={{ id: toolPart.toolCallId, type: "file", url: result.url || result.image_url, mediaType: "image/png", filename: "output.png" }}>
                           <AttachmentPreview />
                           <AttachmentInfo />
                         </Attachment>
@@ -355,10 +392,11 @@ export function StrandsChainOfThought({ message, isStreaming = false }: StrandsC
               <ChainOfThoughtStep key={`tool-${index}`} icon={WrenchIcon} label={`Using tool: ${toolName}`} status={isToolComplete ? "complete" : "active"}>
                 <div className="mt-3 ml-4 border-l-2 border-muted pl-4 pb-2">
                   <Tool defaultOpen={!isToolComplete}>
-                    <ToolHeader type={`tool-${toolName}`} state={isToolComplete ? "output-available" : "input-streaming"} toolName={toolName} />
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    <ToolHeader type={toolPart.type as any} state={isToolComplete ? "output-available" : "input-streaming"} toolName={toolName} />
                     <ToolContent>
                       <ToolInput input={args} />
-                      {isToolComplete && <ToolOutput output={<div className="text-xs font-mono break-all">{JSON.stringify(result, null, 2)}</div>} />}
+                      {isToolComplete && <ToolOutput output={result || JSON.stringify(result, null, 2)} errorText={'errorText' in toolPart ? toolPart.errorText : undefined} />}
                     </ToolContent>
                   </Tool>
                 </div>

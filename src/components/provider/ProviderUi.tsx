@@ -16,7 +16,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { cn } from '@/utils/cn'
 import { buildGoogleMapsDirectionsUrl, buildGoogleMapsSearchUrl } from '@/copilot/provider/normalizers'
-import { useProviderThreadState } from '@/copilot/provider/ProviderThreadState'
+import { useProviderThreadState } from '@/copilot/provider/useProviderThreadState'
 import type { ProviderResearchJob, ProviderSearchResult, ProviderSearchRun, ProviderSource } from '@/copilot/provider/types'
 
 const EASE = [0.16, 1, 0.3, 1] as const
