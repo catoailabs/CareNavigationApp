@@ -1249,3 +1249,248 @@ def query_guideline_vector_store(
         "records_path": str(records_path),
         "offsets_path": str(offsets_path),
     }
+
+
+def _coerce_numeric_vector(vector: Any) -> list[float]:
+    if not isinstance(vector, list) or not vector:
+        raise ValueError("Embedding vector must be a non-empty list")
+    coerced: list[float] = []
+    for value in vector:
+        try:
+            coerced.append(float(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid embedding vector value: {value!r}") from exc
+    return coerced
+
+
+def _prepare_inline_guideline_chunks(
+    *,
+    source_path: str,
+    source_name: str,
+    document_text: str,
+    chunk_chars: int,
+    chunk_overlap: int,
+) -> tuple[list[str], list[str]]:
+    chunks = _chunk_text(document_text, chunk_chars=chunk_chars, chunk_overlap=chunk_overlap)
+    if not chunks:
+        raise ValueError("document_text did not produce any indexable chunks")
+
+    embedding_texts: list[str] = []
+    total_chunks = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        embedding_texts.append(
+            _contextualize_chunk(
+                source_path=source_path,
+                source_name=source_name,
+                chunk_index=idx,
+                total_chunks=total_chunks,
+                current_chunk=chunk,
+                previous_chunk=chunks[idx - 1] if idx > 0 else None,
+                next_chunk=chunks[idx + 1] if idx + 1 < total_chunks else None,
+                context_window_chars=GUIDELINE_CONTEXT_WINDOW_CHARS,
+            )
+        )
+    return chunks, embedding_texts
+
+
+def _scan_source_occurrences(records_path: Path, source_path: str) -> tuple[list[int], set[str], int]:
+    positions: list[int] = []
+    unique_sources: set[str] = set()
+    kept_count = 0
+    if not records_path.exists():
+        return positions, unique_sources, kept_count
+
+    for idx, record in enumerate(_iter_jsonl_records(records_path)):
+        record_source = str(record.get("source_path", "")).strip()
+        if record_source == source_path:
+            positions.append(idx)
+            continue
+        kept_count += 1
+        if record_source:
+            unique_sources.add(record_source)
+    return positions, unique_sources, kept_count
+
+
+def upsert_guideline_source(
+    embed_texts: Callable[[list[str]], list[list[float]]],
+    *,
+    source_path: str,
+    document_text: str,
+    store_path: Path = DEFAULT_VECTOR_STORE_PATH,
+    source_name: str | None = None,
+    source_bytes: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    chunk_chars: int = 1200,
+    chunk_overlap: int = 160,
+    replace_existing: bool = False,
+    require_existing: bool = False,
+) -> dict[str, Any]:
+    """Insert or replace one logical guideline source inside the FAISS store."""
+    normalized_source_path = source_path.strip()
+    if not normalized_source_path:
+        raise ValueError("source_path is required")
+    if not document_text.strip():
+        raise ValueError("document_text is required")
+
+    payload = load_guideline_vector_store(store_path)
+    index_path = Path(str(payload.get("index_path", _faiss_index_path(store_path))))
+    records_path = Path(str(payload.get("records_path", _faiss_records_path(store_path))))
+    offsets_path = Path(str(payload.get("offsets_path", _faiss_offsets_path(store_path))))
+
+    existing_positions, existing_source_paths, kept_record_count = _scan_source_occurrences(
+        records_path,
+        normalized_source_path,
+    )
+    existing_count = len(existing_positions)
+    if require_existing and existing_count == 0:
+        raise ValueError(f"source_path was not found in the vector store: {normalized_source_path}")
+    if existing_count > 0 and not replace_existing:
+        raise ValueError(
+            f"source_path already exists in the vector store: {normalized_source_path}. "
+            "Use replace to overwrite it."
+        )
+
+    normalized_source_name = (source_name or Path(normalized_source_path).name or normalized_source_path).strip()
+    chunks, embedding_texts = _prepare_inline_guideline_chunks(
+        source_path=normalized_source_path,
+        source_name=normalized_source_name,
+        document_text=document_text,
+        chunk_chars=chunk_chars,
+        chunk_overlap=chunk_overlap,
+    )
+    vectors_raw = embed_texts(embedding_texts)
+    if len(vectors_raw) != len(chunks):
+        raise RuntimeError(
+            "Embedding provider returned an unexpected number of vectors: "
+            f"expected {len(chunks)}, received {len(vectors_raw)}"
+        )
+    vectors = [_coerce_numeric_vector(vector) for vector in vectors_raw]
+
+    faiss, np = _faiss_imports()
+    if index_path.exists():
+        faiss_index = faiss.read_index(str(index_path))
+        if existing_positions:
+            selector = faiss.IDSelectorBatch(np.asarray(existing_positions, dtype="int64"))
+            faiss_index.remove_ids(selector)
+    elif existing_count > 0 or kept_record_count > 0:
+        raise RuntimeError(f"Vector index missing for populated store: {index_path}")
+    else:
+        faiss_index = None
+
+    matrix = _normalize_vectors(vectors, np=np, faiss=faiss)
+    if faiss_index is None:
+        faiss_index = faiss.IndexFlatIP(int(matrix.shape[1]))
+    else:
+        expected_dim = int(getattr(faiss_index, "d", matrix.shape[1]))
+        if expected_dim != int(matrix.shape[1]):
+            raise ValueError(
+                f"Embedding dimension mismatch: store expects {expected_dim}, received {int(matrix.shape[1])}"
+            )
+    faiss_index.add(matrix)
+
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    offsets_path.parent.mkdir(parents=True, exist_ok=True)
+
+    records_tmp_path = records_path.with_name(f"{records_path.name}.tmp")
+    offsets_tmp_path = offsets_path.with_name(f"{offsets_path.name}.tmp")
+    index_tmp_path = index_path.with_name(f"{index_path.name}.tmp")
+    store_tmp_path = store_path.with_name(f"{store_path.name}.tmp")
+
+    offsets: list[int] = []
+    unique_sources = set(existing_source_paths)
+    if normalized_source_path:
+        unique_sources.add(normalized_source_path)
+    source_bytes_value = source_bytes if source_bytes is not None else len(document_text.encode("utf-8"))
+    suffix = Path(normalized_source_name).suffix.lower() or Path(normalized_source_path).suffix.lower()
+    base_metadata = {
+        "source_bytes": int(source_bytes_value),
+        "suffix": suffix,
+        "total_chunks_in_source": len(chunks),
+        "contextualized_embedding": True,
+        "context_window_chars": GUIDELINE_CONTEXT_WINDOW_CHARS,
+        "ingested_via": "guidelines_vector_tools",
+    }
+    if metadata:
+        base_metadata.update(metadata)
+
+    with records_tmp_path.open("w", encoding="utf-8") as records_handle:
+        if records_path.exists():
+            for record in _iter_jsonl_records(records_path):
+                record_source = str(record.get("source_path", "")).strip()
+                if record_source == normalized_source_path:
+                    continue
+                offsets.append(records_handle.tell())
+                records_handle.write(json.dumps(record, ensure_ascii=True))
+                records_handle.write("\n")
+
+        for chunk_index, chunk_text in enumerate(chunks):
+            record_payload = {
+                "chunk_id": f"{normalized_source_path}::chunk_{chunk_index:05d}",
+                "source_path": normalized_source_path,
+                "source_name": normalized_source_name,
+                "chunk_index": chunk_index,
+                "text": chunk_text,
+                "model": str(payload.get("model") or PERPLEXITY_GUIDELINE_EMBEDDING_MODEL),
+                "metadata": dict(base_metadata),
+            }
+            offsets.append(records_handle.tell())
+            records_handle.write(json.dumps(record_payload, ensure_ascii=True))
+            records_handle.write("\n")
+
+    offsets_tmp_path.write_text(json.dumps(offsets, ensure_ascii=True), encoding="utf-8")
+    faiss.write_index(faiss_index, str(index_tmp_path))
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    files_skipped = int(payload.get("stats", {}).get("files_skipped", 0))
+    record_count = len(offsets)
+    manifest_payload = {
+        "schema_version": int(payload.get("schema_version", SCHEMA_VERSION)),
+        "backend": FAISS_BACKEND,
+        "created_at": payload.get("created_at") or now_iso,
+        "updated_at": now_iso,
+        "guidelines_dir": str(payload.get("guidelines_dir") or DEFAULT_GUIDELINES_DIR),
+        "model": str(payload.get("model") or PERPLEXITY_GUIDELINE_EMBEDDING_MODEL),
+        "chunk_chars": int(payload.get("chunk_chars", chunk_chars)),
+        "chunk_overlap": int(payload.get("chunk_overlap", chunk_overlap)),
+        "use_contextualized_embeddings": bool(payload.get("use_contextualized_embeddings", True)),
+        "context_window_chars": int(payload.get("context_window_chars", GUIDELINE_CONTEXT_WINDOW_CHARS)),
+        "batch_pause_seconds": float(payload.get("batch_pause_seconds", 0.0)),
+        "stats": {
+            "files_indexed": len(unique_sources),
+            "chunks_indexed": record_count,
+            "files_skipped": files_skipped,
+        },
+        "record_count": record_count,
+        "index_path": str(index_path),
+        "records_path": str(records_path),
+        "offsets_path": str(offsets_path),
+        "faiss_metric": str(payload.get("faiss_metric", "inner_product_normalized")),
+    }
+    store_tmp_path.write_text(
+        json.dumps(manifest_payload, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+
+    records_tmp_path.replace(records_path)
+    offsets_tmp_path.replace(offsets_path)
+    index_tmp_path.replace(index_path)
+    store_tmp_path.replace(store_path)
+
+    action = "replaced" if existing_count > 0 else "inserted"
+    return {
+        "ok": True,
+        "action": action,
+        "store_path": str(store_path),
+        "index_path": str(index_path),
+        "records_path": str(records_path),
+        "offsets_path": str(offsets_path),
+        "source_path": normalized_source_path,
+        "source_name": normalized_source_name,
+        "chunks_added": len(chunks),
+        "chunks_removed": existing_count,
+        "record_count": record_count,
+        "stats": manifest_payload["stats"],
+        "model": manifest_payload["model"],
+    }

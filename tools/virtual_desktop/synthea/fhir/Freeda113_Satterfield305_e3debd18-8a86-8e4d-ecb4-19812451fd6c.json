@@ -1,0 +1,30 @@
+{
+  "resourceType": "Patient",
+  "identifier": [
+    {
+      "system": "https://github.com/synthetichealth/synthea",
+      "value": "e3debd18-8a86-8e4d-ecb4-19812451fd6c"
+    }
+  ],
+  "active": true,
+  "name": [
+    {
+      "use": "official",
+      "family": "Satterfield",
+      "given": [
+        "Freeda"
+      ]
+    }
+  ],
+  "gender": "female",
+  "birthDate": "1978-09-13",
+  "address": [
+    {
+      "line": ["98 Synthea Lane"],
+      "city": "Cambridge",
+      "state": "MA",
+      "postalCode": "02139",
+      "country": "US"
+    }
+  ]
+}

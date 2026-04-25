@@ -1,0 +1,59 @@
+FROM lscr.io/linuxserver/webtop:ubuntu-xfce
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/workspace:/workspace/tools/ronbrowser_agent_tools/src
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
+    curl \
+    git \
+    gnome-screenshot \
+    jq \
+    nodejs \
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-tk \
+    scrot \
+    tesseract-ocr \
+    wmctrl \
+    xclip \
+    xdotool \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python3 -m pip install --no-cache-dir \
+      "strands-agents[gemini]>=1.26.0" \
+      "strands-agents-tools>=0.1.0" \
+      "strands-agents-evals>=0.1.0" \
+      "strands-fun-tools>=0.3.0" \
+      "google-cloud-aiplatform>=1.79.0" \
+      "litellm>=1.40.0" \
+      "boto3>=1.34.0" \
+      "pandas>=2.2.0" \
+      "httpx>=0.27.0" \
+      "python-dotenv>=1.0.0" \
+      "pyyaml>=6.0" \
+      "tqdm>=4.66.0" \
+      "jsonlines>=4.0.0" \
+      "ijson>=3.3.0" \
+      "jinja2>=3.1.0" \
+      "playwright>=1.52.0" \
+      "pillow>=10.3.0" \
+      "pypdf>=5.3.1" \
+      "faiss-cpu>=1.8.0" \
+      "pyautogui>=0.9.54" \
+      "pyperclip>=1.9.0" \
+      "pytesseract>=0.3.10" \
+      "a2a-sdk[sql]>=0.3.0,<0.4.0"
+
+COPY init/start-pillar6-browser.sh /usr/local/bin/start-pillar6-browser.sh
+COPY init/10-browser-autostart.sh /custom-cont-init.d/10-browser-autostart.sh
+
+RUN chmod 0755 /usr/local/bin/start-pillar6-browser.sh /custom-cont-init.d/10-browser-autostart.sh
+
+WORKDIR /workspace

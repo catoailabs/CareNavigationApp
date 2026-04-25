@@ -464,86 +464,9 @@ const PreviewPanel = memo(function PreviewPanel({ url, onClose }: PreviewPanelPr
 // Dev Server Detection Hook
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEV_SERVER_PATTERNS = [
-  /npm run dev/i,
-  /npm start/i,
-  /pnpm dev/i,
-  /pnpm start/i,
-  /yarn dev/i,
-  /yarn start/i,
-  /vite/i,
-  /next dev/i,
-  /nuxt dev/i,
-  /astro dev/i,
-  /remix dev/i,
-  /gatsby develop/i,
-  /parcel serve/i,
-  /webpack serve/i,
-  /http-server/i,
-  /live-server/i,
-  /python -m http\.server/i,
-  /python3 -m http\.server/i,
-]
-
-const DEV_SERVER_URL_PATTERNS = [
-  /localhost:\d+/i,
-  /127\.0\.0\.1:\d+/i,
-  /0\.0\.0\.0:\d+/i,
-  /:\d{4,5}/i,
-]
-
 function useDevServerDetection() {
   const [isRunning, setIsRunning] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const { activeMessages } = useBuildStore()
-  const messages = activeMessages()
-
-  // Check for dev server commands in messages
-  useEffect(() => {
-    const checkForDevCommands = () => {
-      for (const message of messages) {
-        if (message.role !== 'assistant') continue
-        
-        for (const block of message.blocks) {
-          // Check code blocks for dev commands
-          if (block.type === 'code') {
-            const content = block.content || ''
-            for (const pattern of DEV_SERVER_PATTERNS) {
-              if (pattern.test(content)) {
-                // Look for URL patterns
-                for (const urlPattern of DEV_SERVER_URL_PATTERNS) {
-                  const match = content.match(urlPattern)
-                  if (match) {
-                    const url = match[0].startsWith('http') ? match[0] : `http://${match[0]}`
-                    setPreviewUrl(url)
-                    setIsRunning(true)
-                    return
-                  }
-                }
-                // Default to common dev server ports
-                setPreviewUrl('http://localhost:3000')
-                setIsRunning(true)
-                return
-              }
-            }
-          }
-          
-          // Check text blocks for URLs
-          if (block.type === 'text') {
-            const content = block.content || ''
-            const urlMatch = content.match(/(https?:\/\/localhost:\d+|https?:\/\/127\.0\.0\.1:\d+)/i)
-            if (urlMatch) {
-              setPreviewUrl(urlMatch[1])
-              setIsRunning(true)
-              return
-            }
-          }
-        }
-      }
-    }
-
-    checkForDevCommands()
-  }, [messages])
 
   const stopPreview = useCallback(() => {
     setIsRunning(false)

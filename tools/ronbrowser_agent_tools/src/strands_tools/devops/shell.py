@@ -126,8 +126,10 @@ class CommandExecutor:
 
             if pid == 0:  # Child process
                 try:
-                    os.chdir(cwd)
-                    os.execvp("/bin/sh", ["/bin/sh", "-c", command])
+                    # Execute inside the virtual desktop container
+                    os.execvp(
+                        "docker", ["docker", "exec", "-i", "-w", cwd, "ron-agent-desktop", "/bin/sh", "-c", command]
+                    )
                 except Exception as e:
                     logger.debug(f"Error in child: {e}")
                     sys.exit(1)

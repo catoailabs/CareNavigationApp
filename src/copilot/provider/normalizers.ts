@@ -1,4 +1,8 @@
-import type { ToolCall } from '@ag-ui/core'
+/** Local replacement for the removed @ag-ui/core ToolCall type. */
+interface ToolCall {
+  id: string
+  function: { name: string; arguments: string }
+}
 import {
   PROVIDER_AWARD_KEYWORDS,
   PROVIDER_EDUCATION_KEYWORDS,

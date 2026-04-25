@@ -122,7 +122,10 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
       Parameters
     </h4>
     <div className="rounded-md bg-muted/50">
-      <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+      <CodeBlock
+        code={JSON.stringify(input ?? {}, null, 2) ?? "{}"}
+        language="json"
+      />
     </div>
   </div>
 );
@@ -146,7 +149,10 @@ export const ToolOutput = ({
 
   if (typeof output === "object" && !isValidElement(output)) {
     Output = (
-      <CodeBlock code={JSON.stringify(output, null, 2)} language="json" />
+      <CodeBlock
+        code={JSON.stringify(output ?? null, null, 2) ?? "null"}
+        language="json"
+      />
     );
   } else if (typeof output === "string") {
     Output = <CodeBlock code={output} language="json" />;

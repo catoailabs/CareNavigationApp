@@ -1,6 +1,6 @@
 import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
-import { useAgent, UseAgentUpdate, useAgentContext, useCopilotKit } from '@copilotkit/react-core/v2'
-import { PROVIDER_AGENT_ID, PROVIDER_COMPARE_LIMIT } from './constants'
+import type { UIMessage } from 'ai'
+import { PROVIDER_COMPARE_LIMIT } from './constants'
 import {
   buildProviderCompareRows,
   createProviderThreadSnapshot,
@@ -9,6 +9,7 @@ import {
 import type { ProviderCompareRow, ProviderResearchJob, ProviderSearchResult, ProviderThreadSnapshot } from './types'
 
 interface ProviderThreadStateValue {
+  threadId: string
   snapshot: ProviderThreadSnapshot
   isRunning: boolean
   selectedProvider: ProviderSearchResult | null
@@ -67,42 +68,105 @@ function buildDeepResearchFetchPrompt(job: ProviderResearchJob): string {
   ].join(' ')
 }
 
-async function runAgentPrompt(
-  prompt: string,
-  agent: ReturnType<typeof useAgent>['agent'],
-  runAgent: ReturnType<typeof useCopilotKit>['copilotkit']['runAgent'],
-) {
-  agent.addMessage({
-    id: crypto.randomUUID(),
-    role: 'user',
-    content: prompt,
-  })
-  await runAgent({ agent })
+/**
+ * Convert AI SDK v6 UIMessage[] to the AgentMessageLike[] shape that
+ * createProviderThreadSnapshot expects.
+ *
+ * AI SDK v6 tool parts use 'dynamic-tool' type with state machine.
+ * We convert these into the ToolCall / tool-message shape that normalizers.ts understands.
+ */
+function adaptMessagesForSnapshot(messages: UIMessage[]): Array<{
+  id: string
+  role: string
+  content?: unknown
+  toolCalls?: Array<{ id: string; function: { name: string; arguments: string } }>
+  toolCallId?: string
+}> {
+  const adapted: Array<{
+    id: string
+    role: string
+    content?: unknown
+    toolCalls?: Array<{ id: string; function: { name: string; arguments: string } }>
+    toolCallId?: string
+  }> = []
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      const textParts = msg.parts.filter(p => p.type === 'text')
+      const text = textParts.map(p => (p as { type: 'text'; text: string }).text).join('\n')
+      adapted.push({ id: msg.id, role: 'user', content: text })
+      continue
+    }
+
+    if (msg.role === 'assistant') {
+      // Collect text content
+      const textParts = msg.parts.filter(p => p.type === 'text')
+      const text = textParts.map(p => (p as { type: 'text'; text: string }).text).join('\n')
+
+      // Collect tool calls from dynamic-tool parts
+      const toolParts = msg.parts.filter(p => p.type === 'dynamic-tool') as Array<{
+        type: 'dynamic-tool'
+        toolCallId: string
+        toolName: string
+        state: string
+        input?: Record<string, unknown>
+        output?: unknown
+      }>
+
+      const toolCalls = toolParts.map(tp => ({
+        id: tp.toolCallId,
+        function: {
+          name: tp.toolName,
+          arguments: JSON.stringify(tp.input ?? {}),
+        },
+      }))
+
+      adapted.push({
+        id: msg.id,
+        role: 'assistant',
+        content: text,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      })
+
+      // Create tool result messages for tools with output-available state
+      for (const tp of toolParts) {
+        if (tp.state === 'output-available' && tp.output !== undefined) {
+          adapted.push({
+            id: `${msg.id}-tool-${tp.toolCallId}`,
+            role: 'tool',
+            toolCallId: tp.toolCallId,
+            content: typeof tp.output === 'string' ? tp.output : JSON.stringify(tp.output),
+          })
+        }
+      }
+    }
+  }
+
+  return adapted
 }
 
 export function ProviderThreadStateProvider({
   threadId,
+  messages,
+  sendMessage,
+  isRunning,
   children,
 }: {
   threadId: string
+  messages: UIMessage[]
+  sendMessage: (text: string) => void
+  isRunning: boolean
   children: ReactNode
 }) {
-  const { agent } = useAgent({
-    agentId: PROVIDER_AGENT_ID,
-    updates: [
-      UseAgentUpdate.OnMessagesChanged,
-      UseAgentUpdate.OnRunStatusChanged,
-      UseAgentUpdate.OnStateChanged,
-    ],
-  })
-  const { copilotkit } = useCopilotKit()
   const [selectedProviderNpi, setSelectedProviderNpi] = useState<string | null>(null)
   const [comparedProviderNpis, setComparedProviderNpis] = useState<string[]>([])
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isCompareOpen, setIsCompareOpen] = useState(false)
   const [isResearchOpen, setIsResearchOpen] = useState(false)
 
-  const snapshot = useMemo(() => createProviderThreadSnapshot(agent.messages), [agent.messages])
+  // Adapt AI SDK v6 messages to the shape normalizers.ts expects
+  const adaptedMessages = useMemo(() => adaptMessagesForSnapshot(messages), [messages])
+  const snapshot = useMemo(() => createProviderThreadSnapshot(adaptedMessages), [adaptedMessages])
 
   const selectedProvider = useMemo(
     () => findProviderByNpi(snapshot.searchRuns, selectedProviderNpi),
@@ -125,24 +189,12 @@ export function ProviderThreadStateProvider({
     }) ?? null
   }, [selectedProvider, snapshot.researchJobs])
 
-  useAgentContext({
-    description: 'Provider discovery interface state',
-    value: {
-      activeThreadId: threadId,
-      selectedProviderNpi,
-      comparedProviderNpis,
-      profileOpen: isProfileOpen,
-      compareOpen: isCompareOpen,
-      researchOpen: isResearchOpen,
-    },
-  })
-
   const openProfile = useCallback(async (provider: ProviderSearchResult) => {
     setSelectedProviderNpi(provider.npi)
     setIsProfileOpen(true)
-    if (provider.generalSources.length > 0 || agent.isRunning) return
-    await runAgentPrompt(buildProfilePrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
-  }, [agent, copilotkit])
+    if (provider.generalSources.length > 0 || isRunning) return
+    sendMessage(buildProfilePrompt(provider))
+  }, [isRunning, sendMessage])
 
   const closeProfile = useCallback(() => {
     setIsProfileOpen(false)
@@ -182,36 +234,37 @@ export function ProviderThreadStateProvider({
       return topic.includes(provider.npi.toLowerCase()) || topic.includes(provider.displayName.toLowerCase())
     }) ?? null
 
-    if (agent.isRunning) return
+    if (isRunning) return
 
     if (!existingJob || ['FAILED', 'TIMED_OUT', 'CANCELLED'].includes(existingJob.status)) {
-      await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
+      sendMessage(buildDeepResearchStartPrompt(provider))
       return
     }
 
     if (existingJob.status !== 'COMPLETED') {
-      await runAgentPrompt(buildDeepResearchFetchPrompt(existingJob), agent, copilotkit.runAgent.bind(copilotkit))
+      sendMessage(buildDeepResearchFetchPrompt(existingJob))
     }
-  }, [agent, copilotkit, snapshot.researchJobs])
+  }, [isRunning, sendMessage, snapshot.researchJobs])
 
   const refreshResearch = useCallback(async (provider: ProviderSearchResult, job: ProviderResearchJob | null) => {
     setSelectedProviderNpi(provider.npi)
     setIsResearchOpen(true)
-    if (agent.isRunning) return
+    if (isRunning) return
     if (job?.requestId) {
-      await runAgentPrompt(buildDeepResearchFetchPrompt(job), agent, copilotkit.runAgent.bind(copilotkit))
+      sendMessage(buildDeepResearchFetchPrompt(job))
       return
     }
-    await runAgentPrompt(buildDeepResearchStartPrompt(provider), agent, copilotkit.runAgent.bind(copilotkit))
-  }, [agent, copilotkit])
+    sendMessage(buildDeepResearchStartPrompt(provider))
+  }, [isRunning, sendMessage])
 
   const closeResearch = useCallback(() => {
     setIsResearchOpen(false)
   }, [])
 
   const value = useMemo<ProviderThreadStateValue>(() => ({
+    threadId,
     snapshot,
-    isRunning: agent.isRunning,
+    isRunning,
     selectedProvider,
     comparedProviders,
     compareRows,
@@ -228,7 +281,8 @@ export function ProviderThreadStateProvider({
     refreshResearch,
     closeResearch,
   }), [
-    agent.isRunning,
+    threadId,
+    isRunning,
     closeCompare,
     closeProfile,
     closeResearch,

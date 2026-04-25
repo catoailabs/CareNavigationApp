@@ -28,8 +28,8 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/chrome-ws/, ''),
       },
-      '/api/copilotkit': {
-        target: 'http://localhost:8787',
+      '/api/chat': {
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

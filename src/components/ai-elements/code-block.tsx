@@ -109,7 +109,7 @@ const LineSpan = ({
 
 // Types
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
-  code: string;
+  code?: string | null;
   language: BundledLanguage;
   showLineNumbers?: boolean;
 };
@@ -430,14 +430,24 @@ export const CodeBlock = ({
   children,
   ...props
 }: CodeBlockProps) => {
-  const contextValue = useMemo(() => ({ code }), [code]);
+  const safeCode = useMemo(() => {
+    if (typeof code === "string") {
+      return code;
+    }
+    if (code == null) {
+      return "";
+    }
+    return String(code);
+  }, [code]);
+
+  const contextValue = useMemo(() => ({ code: safeCode }), [safeCode]);
 
   return (
     <CodeBlockContext.Provider value={contextValue}>
       <CodeBlockContainer className={className} language={language} {...props}>
         {children}
         <CodeBlockContent
-          code={code}
+          code={safeCode}
           language={language}
           showLineNumbers={showLineNumbers}
         />

@@ -276,3 +276,36 @@ Traceback (most recent call last):
     self._selector.control([kev], 0, 0)
 OSError: [Errno 22] Invalid argument
 
+
+[2026-04-13T09:32:12.834332] Python REPL Error:
+Code:
+print("hello world"[::-1])
+Error:
+Traceback (most recent call last):
+  File "/Users/timhunter/healthcare/tools/ronbrowser_agent_tools/src/strands_tools/devops/python_repl.py", line 602, in python_repl
+    user_input = get_user_input(
+        "<yellow><bold>Do you want to proceed with Python code execution?</bold> [y/*]</yellow>"
+    )
+  File "/Users/timhunter/healthcare/.venv/lib/python3.14/site-packages/strands_tools/utils/user_input.py", line 70, in get_user_input
+    result = loop.run_until_complete(get_user_input_async(prompt, default, keyboard_interrupt_return_default))
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/timhunter/healthcare/.venv/lib/python3.14/site-packages/strands_tools/utils/user_input.py", line 44, in get_user_input_async
+    return await _get_input()
+           ^^^^^^^^^^^^^^^^^^
+  File "/Users/timhunter/healthcare/.venv/lib/python3.14/site-packages/strands_tools/utils/user_input.py", line 35, in _get_input
+    response = await session.prompt_async(HTML(f"{prompt} "))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/timhunter/healthcare/.venv/lib/python3.14/site-packages/prompt_toolkit/shortcuts/prompt.py", line 1252, in prompt_async
+    return await self.app.run_async(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+        set_exception_handler=set_exception_handler, handle_sigint=handle_sigint
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/timhunter/healthcare/.venv/lib/python3.14/site-packages/prompt_toolkit/application/application.py", line 651, in run_async
+    assert not self._is_running, "Application is already running."
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: Application is already running.
+

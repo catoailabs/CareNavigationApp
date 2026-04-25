@@ -90,6 +90,7 @@ from strands import Agent, tool
 from strands.multiagent import Swarm
 
 from strands_tools.utils import console_util
+from strands_tools.utils.models.model import create_model
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,14 @@ def _create_custom_agents(
     agents = []
     used_names = set()
 
+    parent_model = parent_agent.model if parent_agent and hasattr(parent_agent, "model") else None
+    parent_model_provider = (
+        getattr(parent_agent, "model_provider", None) if parent_agent else None
+    )
+    parent_model_settings = (
+        getattr(parent_agent, "model_settings", None) if parent_agent else None
+    )
+
     for i, spec in enumerate(agent_specs):
         # Validate required fields
         if not isinstance(spec, dict):
@@ -200,28 +209,28 @@ def _create_custom_agents(
             # Get actual tool objects from parent agent's registry
             agent_tools = [parent_agent.tool_registry.registry[tool_name] for tool_name in filtered_tool_names]
 
+        model_provider = spec.get("model_provider") or parent_model_provider
+        model_settings = spec.get("model_settings") or parent_model_settings
+        selected_model = parent_model
+
+        if model_provider:
+            selected_model = create_model(provider=model_provider, config=model_settings)
+        elif spec.get("model_settings"):
+            logger.warning(
+                "Agent '%s' provided model_settings without a compatible model provider; "
+                "inheriting the parent model unchanged.",
+                agent_name,
+            )
+
         # Create agent
         swarm_agent = Agent(
             name=agent_name,
+            model=selected_model,
             system_prompt=system_prompt,
             tools=agent_tools,
             callback_handler=parent_agent.callback_handler if parent_agent else None,
             trace_attributes=parent_agent.trace_attributes if parent_agent else None,
         )
-
-        # Configure model provider
-        model_provider = spec.get("model_provider")
-        if model_provider:
-            swarm_agent.model_provider = model_provider
-        elif parent_agent and hasattr(parent_agent, "model_provider"):
-            swarm_agent.model_provider = parent_agent.model_provider
-
-        # Configure model settings
-        model_settings = spec.get("model_settings")
-        if model_settings:
-            swarm_agent.model_settings = model_settings
-        elif parent_agent and hasattr(parent_agent, "model_settings"):
-            swarm_agent.model_settings = parent_agent.model_settings
 
         agents.append(swarm_agent)
         logger.debug(f"Created agent '{agent_name}' with {len(agent_tools or [])} tools")

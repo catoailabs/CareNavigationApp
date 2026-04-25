@@ -45,7 +45,7 @@ There is no JS/TS test runner configured. Client-side verification is "typecheck
 ### Dev environment prerequisites
 
 - `.venv/` Python venv at project root (currently 3.14) — `scripts/run-provider-agent.sh` hard-codes `.venv/bin/python`.
-- `.env` at project root with: `XAI_API_KEY` (required), `PERPLEXITY_API_KEY` (required for the two perplexity tools). Optional: `STRANDS_MODEL_ID`, `STRANDS_AGENT_ID`, `STRANDS_SESSION_ID`, `STRANDS_MAX_FOLLOWUPS`, `PROVIDER_BROWSER_AUTOSTART=0`.
+- `.env` at project root with: `XAI_API_KEY` (required), `PERPLEXITY_API_KEY` (required for the two perplexity tools). Optional: `STRANDS_MODEL_ID`, `STRANDS_AGENT_ID`, `STRANDS_SESSION_ID`, `STRANDS_MAX_FOLLOWUPS`, `PROVIDER_BROWSER_AUTOSTART=0`. Logging: `LOG_FILE` (default `./logs/agent_server.log`), `LOG_MAX_BYTES` (default 50 MB), `LOG_BACKUP_COUNT` (default 5). CORS: `APP_ENV` (`development`|`production`; default `development`), `CORS_ALLOWED_ORIGINS` (comma-separated allowlist, **required when `APP_ENV=production`** — boot fails closed otherwise; defaults to `http://127.0.0.1:5173,http://localhost:5173` in dev).
 - Git submodules under `tools/mcp/` (datacommons, healthcare-mcp-public, mcp-playwright, openapi-mcp, pophive-mcp-server, telnyx-mcp-server, unsloth-mcp-server) — run `git submodule update --init --recursive` after clone.
 
 ## Architecture
@@ -115,7 +115,7 @@ Only three tools are wired into the live agent today. See `server/agent_tooling.
 - **`agent.py` test contract**: `tests/test_agent.py::BuildAgentTests` asserts `session_manager` is NOT in the kwargs passed to `Agent(…)` for the default `build_agent(model=…)` path. `build_agent` only adds `session_manager` when explicitly passed — preserve that invariant.
 - **Uvicorn `--reload` runs by default** via `run-provider-agent.sh`. Python tracebacks on boot mean a tool file under `PROVIDER_TOOL_PATHS` is missing or raising at import time.
 - **Perplexity deep-research citations can be bare URL strings** *or* dicts; `_extract_sources` handles both. Don't tighten that to dict-only.
-- **`agent_server.log` is unbounded and grows to GBs** — there's no rotation config. Truncate or add `logging.handlers.RotatingFileHandler` before anything you care about.
+- **`agent_server.log` rotation** — `agent.py` installs a `RotatingFileHandler` at import time (50 MB max, 5 backups, total ceiling 250 MB). Log path defaults to `./logs/agent_server.log`; override with env vars `LOG_FILE`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`.
 - **Dev port choreography**: Vite 5173, FastAPI 8000, Chromium CDP 9222. `/api/chat` is proxied from 5173 → 8000 in `vite.config.ts`. If uvicorn fails to bind, the chat silently 502s from the proxy.
 - **Strands sessions directory is gitignored** (`.strands-sessions/`). Conversation memory is local-machine-only; don't rely on it in CI.
 - **AI SDK v3 package alongside v6**: `package.json` has `@ai-sdk/react@^3.0.148` (React bindings) *paired with* `ai@^6.0.116`. This is the canonical v6 layout — both are required. Don't "upgrade" `@ai-sdk/react` to v6 expecting parity; the v3 major of the React package is what pairs with `ai@6`.

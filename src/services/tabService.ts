@@ -1,4 +1,8 @@
 import type { ContextItem } from '@/components/agent-panel/ContextPicker'
+import {
+  isBrowserExtensionBridgeAvailable,
+  loadTabsFromBrowserExtension,
+} from '@/services/browserExtensionBridge'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Chrome DevTools Protocol Tab Service
@@ -18,10 +22,15 @@ export interface ChromeTab {
   description?: string
 }
 
+interface ExtractedTabContext {
+  pageContent?: string
+  navigationInfo?: ContextItem['navigationInfo']
+}
+
 // Fetch all open Chrome tabs via CDP
 async function fetchChromeTabs(): Promise<ChromeTab[]> {
   try {
-    const res = await fetch('/api/chrome-tabs')
+    const res = await fetch('/api/chrome-tabs', { signal: AbortSignal.timeout(2500) })
     if (!res.ok) throw new Error(`CDP returned ${res.status}`)
     const tabs: ChromeTab[] = await res.json()
     // Only return actual pages (not background, service workers, etc.)
@@ -80,15 +89,15 @@ async function captureTabScreenshot(tab: ChromeTab): Promise<string | null> {
   }
 }
 
-// Get page content via CDP
-async function getTabContent(tab: ChromeTab): Promise<string | null> {
+// Get full tab context via CDP
+async function getTabContext(tab: ChromeTab): Promise<ExtractedTabContext | null> {
   if (!tab.webSocketDebuggerUrl) return null
 
   try {
     const wsUrl = tab.webSocketDebuggerUrl
       .replace('ws://localhost:9222', `ws://${window.location.host}/api/chrome-ws`)
 
-    return new Promise<string | null>((resolve) => {
+    return new Promise<ExtractedTabContext | null>((resolve) => {
       const ws = new WebSocket(wsUrl)
       const timeout = setTimeout(() => {
         ws.close()
@@ -99,7 +108,29 @@ async function getTabContent(tab: ChromeTab): Promise<string | null> {
         ws.send(JSON.stringify({
           id: 1,
           method: 'Runtime.evaluate',
-          params: { expression: 'document.body.innerText.substring(0, 5000)' }
+          params: {
+            expression: `(() => {
+              const canonical = document.querySelector('link[rel="canonical"]')?.href || undefined
+              const referrer = document.referrer || undefined
+              const links = Array.from(
+                new Set(
+                  Array.from(document.querySelectorAll('a[href]'))
+                    .map((anchor) => anchor.href)
+                    .filter(Boolean)
+                )
+              )
+
+              return {
+                pageContent: (document.documentElement?.innerText || document.body?.innerText || '').trim(),
+                navigationInfo: {
+                  canonical,
+                  referrer,
+                  links,
+                },
+              }
+            })()`,
+            returnByValue: true,
+          },
         }))
       }
 
@@ -107,7 +138,7 @@ async function getTabContent(tab: ChromeTab): Promise<string | null> {
         try {
           const msg = JSON.parse(event.data)
           if (msg.id === 1 && msg.result?.result?.value) {
-            resolve(msg.result.result.value)
+            resolve(msg.result.result.value as ExtractedTabContext)
           } else {
             resolve(null)
           }
@@ -143,6 +174,12 @@ function getFaviconUrl(pageUrl: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loadRealTabs(): Promise<ContextItem[]> {
+  try {
+    return await loadTabsFromBrowserExtension()
+  } catch {
+    // Fall back to the local CDP bridge when the extension bridge is unavailable.
+  }
+
   const chromeTabs = await fetchChromeTabs()
 
   if (chromeTabs.length === 0) {
@@ -171,8 +208,13 @@ export async function loadRealTabs(): Promise<ContextItem[]> {
 
       // Attempt page content extraction
       try {
-        const content = await getTabContent(tab)
-        if (content) item.pageContent = content
+        const tabContext = await getTabContext(tab)
+        if (tabContext?.pageContent) {
+          item.pageContent = tabContext.pageContent
+        }
+        if (tabContext?.navigationInfo) {
+          item.navigationInfo = tabContext.navigationInfo
+        }
       } catch { /* graceful fallback */ }
 
       return item
@@ -190,4 +232,13 @@ export async function isCDPAvailable(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+export async function isAnyTabBridgeAvailable(): Promise<boolean> {
+  const [extensionAvailable, cdpAvailable] = await Promise.all([
+    isBrowserExtensionBridgeAvailable(),
+    isCDPAvailable(),
+  ])
+
+  return extensionAvailable || cdpAvailable
 }

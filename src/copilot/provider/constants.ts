@@ -1,5 +1,4 @@
 export const PROVIDER_AGENT_ID = 'provider_research_agent'
-export const COPILOT_RUNTIME_PATH = '/api/copilotkit'
 export const PROVIDER_COMPARE_LIMIT = 4
 
 export const PROVIDER_REVIEW_KEYWORDS = [

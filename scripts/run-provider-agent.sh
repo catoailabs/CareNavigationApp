@@ -11,13 +11,15 @@ fi
 
 cd "$ROOT_DIR"
 
+export BYPASS_TOOL_CONSENT="${BYPASS_TOOL_CONSENT:-true}"
+
 UVICORN_ARGS=(
   agent:app
   --host "${STRANDS_AGENT_HOST:-127.0.0.1}"
   --port "${STRANDS_AGENT_PORT:-8000}"
 )
 
-if [[ "${STRANDS_AGENT_RELOAD:-0}" == "1" ]]; then
+if [[ "${STRANDS_AGENT_RELOAD:-1}" == "1" ]]; then
   UVICORN_ARGS+=(--reload)
 fi
 

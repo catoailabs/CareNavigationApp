@@ -1,0 +1,213 @@
+###############################################################################
+# Healthcare AI Training Infrastructure — Oracle Cloud (PHX)
+# VCN: ron-ai (10.0.0.0/16) | Compartment: tim7620 (root)
+#
+# Services:
+#   1. Orthanc DICOM/PACS server (DICOMweb + REST API)
+#   2. OHIF medical image viewer (connects to Orthanc via DICOMweb)
+#   3. OpenEMR electronic health records
+#   4. OpenEMR MariaDB backend
+#   5. Browser-accessible virtual monitor (desktop UI for OpenEMR workflows)
+#   6. PostgreSQL (Orthanc backend)
+###############################################################################
+
+services:
+  ##############################################
+  # PostgreSQL — shared database backend
+  ##############################################
+  postgres:
+    image: postgres:16-alpine
+    container_name: ron-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ron}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+      POSTGRES_DB: orthanc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - ron-health
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ron}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ##############################################
+  # Orthanc DICOM Server + DICOMweb + REST API
+  #   Port 4242: DICOM protocol (C-Store/Find/Move/Get)
+  #   Port 8042: REST API + Web UI + DICOMweb
+  ##############################################
+  orthanc:
+    image: orthancteam/orthanc:25.6.3
+    container_name: ron-orthanc
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/Orthanc"]
+    command: ["--verbose", "/etc/orthanc/orthanc.json"]
+    ports:
+      - "4242:4242"
+      - "8042:8042"
+    volumes:
+      - orthanc_data:/var/lib/orthanc/db
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - dicom_imports:/imports
+    networks:
+      - ron-health
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import base64, urllib.request; req = urllib.request.Request('http://localhost:8042/system'); req.add_header('Authorization', 'Basic ' + base64.b64encode(b'ron:${ORTHANC_PASSWORD:-changeme_in_production}').decode()); urllib.request.urlopen(req, timeout=5).read()\" >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  ##############################################
+  # OHIF Viewer — web-based medical imaging viewer
+  #   Connects to Orthanc via DICOMweb
+  ##############################################
+  ohif:
+    image: ohif/app:v3.9.2
+    container_name: ron-ohif
+    restart: unless-stopped
+    depends_on:
+      orthanc:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    volumes:
+      - ./ohif-config.js:/usr/share/nginx/html/app-config.js:ro
+    networks:
+      - ron-health
+
+  ##############################################
+  # OpenEMR — Electronic Health Records
+  #   Port 80/443: Web UI + FHIR R4 API
+  ##############################################
+  openemr-db:
+    image: mariadb:10.11
+    container_name: ron-openemr-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${OPENEMR_DB_ROOT_PASSWORD:-changeme_in_production}
+      MYSQL_DATABASE: openemr
+      MYSQL_USER: ${OPENEMR_DB_USER:-openemr}
+      MYSQL_PASSWORD: ${OPENEMR_DB_PASSWORD:-changeme_in_production}
+    volumes:
+      - openemr_db_data:/var/lib/mysql
+    networks:
+      - ron-health
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -u root -p${OPENEMR_DB_ROOT_PASSWORD:-changeme_in_production} --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  openemr:
+    image: openemr/openemr:7.0.3
+    container_name: ron-openemr
+    restart: unless-stopped
+    depends_on:
+      openemr-db:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - openemr_sites:/var/www/localhost/htdocs/openemr/sites
+      - openemr_logs:/var/log
+    environment:
+      MYSQL_HOST: openemr-db
+      MYSQL_ROOT_PASS: ${OPENEMR_DB_ROOT_PASSWORD:-changeme_in_production}
+      MYSQL_USER: ${OPENEMR_DB_USER:-openemr}
+      MYSQL_PASS: ${OPENEMR_DB_PASSWORD:-changeme_in_production}
+      MYSQL_DATABASE: openemr
+      OE_USER: admin
+      OE_PASS: ${OPENEMR_PASSWORD:-changeme_in_production}
+      # FHIR API
+      FHIR_API: "true"
+    networks:
+      - ron-health
+
+  ##############################################
+  # Agent Desktop — long-lived visible desktop runtime
+  #   Open in browser at http://localhost:3001
+  #   Inside desktop, use http://openemr/ and related service DNS names
+  ##############################################
+  agent-desktop:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ron-agent-desktop
+    restart: unless-stopped
+    depends_on:
+      - openemr
+    ports:
+      - "3001:3000"
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Phoenix}
+      TITLE: "Ron Healthcare Agent Desktop"
+      PILLAR6_HOST_GCLOUD: ${PILLAR6_HOST_GCLOUD:-/Users/timhunter/.config/gcloud}
+      PILLAR6_HOST_WORKSPACE: ${PILLAR6_HOST_WORKSPACE:-/Users/timhunter/healthcare}
+      GOOGLE_APPLICATION_CREDENTIALS: /config/host-gcloud/application_default_credentials.json
+      RON_AGENT_SANDBOX_ROOT: /workspace
+      PILLAR6_REMOTE_RUNTIME: "1"
+      PILLAR6_BROWSER_APP_NAME: chromium
+      PILLAR6_BROWSER_DEBUG_PORT: "9222"
+      PILLAR6_BROWSER_PROFILE: /workspace/.runtime/browser-profile
+      PILLAR6_EXEC_SERVICE: agent-exec
+    volumes:
+      - virtual_monitor_config:/config
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PILLAR6_HOST_GCLOUD:-/Users/timhunter/.config/gcloud}:/config/host-gcloud:ro
+      - ${PILLAR6_HOST_WORKSPACE:-..}:/workspace
+    shm_size: "1gb"
+    networks:
+      - ron-health
+
+
+
+  ##############################################
+  # Nginx reverse proxy — unified entry point
+  #   Exposes all services under single domain
+  ##############################################
+  nginx:
+    image: nginx:alpine
+    container_name: ron-nginx
+    restart: unless-stopped
+    depends_on:
+      - orthanc
+      - ohif
+      - openemr
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - ron-health
+
+volumes:
+  pgdata:
+  orthanc_data:
+  dicom_imports:
+  openemr_db_data:
+  openemr_sites:
+  openemr_logs:
+  virtual_monitor_config:
+
+networks:
+  ron-health:
+    driver: bridge

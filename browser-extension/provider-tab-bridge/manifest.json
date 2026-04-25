@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Provider Tab Bridge",
+  "version": "0.1.0",
+  "description": "Exposes open Chrome tabs and page context to the provider research app running on localhost.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Provider Tab Bridge"
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "Name": "Ron Healthcare PACS",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "StorageCompression": false,
+  "MaximumStorageSize": 0,
+  "MaximumPatientCount": 0,
+  "HttpServerEnabled": true,
+  "HttpPort": 8042,
+  "HttpDescribeErrors": true,
+  "HttpCompressionEnabled": true,
+  "DicomServerEnabled": true,
+  "DicomAet": "RON_PACS",
+  "DicomPort": 4242,
+  "DicomCheckCalledAet": false,
+  "DefaultEncoding": "Latin1",
+  "DeflatedTransferSyntaxAccepted": true,
+  "JpegTransferSyntaxAccepted": true,
+  "Jpeg2000TransferSyntaxAccepted": true,
+  "JpegLosslessTransferSyntaxAccepted": true,
+  "Mpeg2TransferSyntaxAccepted": true,
+  "RleTransferSyntaxAccepted": true,
+  "UnknownSopClassAccepted": false,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "DicomAlwaysAllowEcho": true,
+  "DicomAlwaysAllowStore": true,
+  "DicomAlwaysAllowFind": false,
+  "DicomCheckModalityHost": false,
+  "StableAge": 60,
+  "LimitFindResults": 100,
+  "LimitFindInstances": 100,
+  "ConcurrentJobs": 2,
+  "OverwriteInstances": false,
+  "MediaArchiveSize": 1,
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "QidoCaseSensitive": false,
+    "Host": "http://orthanc:8042",
+    "StudiesMetadata": "Full",
+    "SeriesMetadata": "Full",
+    "EnableMetadataCache": true,
+    "MetadataWorkerThreadsCount": 4
+  },
+  "PostgreSQL": {
+    "EnableIndex": true,
+    "EnableStorage": false,
+    "Port": 5432,
+    "Host": "postgres",
+    "Database": "orthanc",
+    "Username": "ron",
+    "Password": "changeme_in_production",
+    "EnableSsl": false,
+    "Lock": false
+  },
+  "RegisteredUsers": {
+    "ron": "changeme_in_production"
+  },
+  "Plugins": [
+    "/run/orthanc/plugins",
+    "/usr/share/orthanc/plugins"
+  ],
+  "Gdcm": {
+    "Throttling": 4,
+    "RestrictTransferSyntaxes": [
+      "1.2.840.10008.1.2.4.90",
+      "1.2.840.10008.1.2.4.91",
+      "1.2.840.10008.1.2.4.92",
+      "1.2.840.10008.1.2.4.93"
+    ]
+  },
+  "OrthancExplorer2": {
+    "Enable": true,
+    "IsDefaultOrthancUI": true
+  },
+  "UserMetadata": {},
+  "Dictionary": {}
+}

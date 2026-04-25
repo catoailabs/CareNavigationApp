@@ -12,6 +12,8 @@ function colorFor(name) {
   switch (name) {
     case 'app':
       return '\x1b[36m'
+    case 'browser':
+      return '\x1b[34m'
     case 'runtime':
       return '\x1b[33m'
     case 'agent':
@@ -50,16 +52,29 @@ function shutdown(code = 0) {
   }
 
   shuttingDown = true
+  const isWindows = process.platform === 'win32'
   for (const child of children) {
-    if (!child.killed) {
-      child.kill('SIGTERM')
+    if (!child.killed && child.pid) {
+      try {
+        if (!isWindows) {
+          process.kill(-child.pid, 'SIGTERM')
+        } else {
+          child.kill('SIGTERM')
+        }
+      } catch (e) {}
     }
   }
 
   setTimeout(() => {
     for (const child of children) {
-      if (!child.killed) {
-        child.kill('SIGKILL')
+      if (!child.killed && child.pid) {
+        try {
+          if (!isWindows) {
+            process.kill(-child.pid, 'SIGKILL')
+          } else {
+            child.kill('SIGKILL')
+          }
+        } catch (e) {}
       }
     }
     process.exit(code)
@@ -67,10 +82,12 @@ function shutdown(code = 0) {
 }
 
 function start(script, name) {
+  const isWindows = process.platform === 'win32'
   const child = spawn(npmCmd, ['run', script], {
     cwd: root,
     env: process.env,
     stdio: ['inherit', 'pipe', 'pipe'],
+    detached: !isWindows,
   })
 
   children.push(child)
@@ -87,9 +104,32 @@ function start(script, name) {
   })
 }
 
+function startTransient(script, name) {
+  const child = spawn(npmCmd, ['run', script], {
+    cwd: root,
+    env: process.env,
+    stdio: ['inherit', 'pipe', 'pipe'],
+  })
+
+  prefixOutput(name, child.stdout, process.stdout)
+  prefixOutput(name, child.stderr, process.stderr)
+
+  child.on('exit', (code, signal) => {
+    if ((code ?? 0) === 0) {
+      return
+    }
+
+    const detail = signal ? `signal ${signal}` : `code ${code ?? 0}`
+    process.stderr.write(`[${name}] exited with ${detail}\n`)
+  })
+}
+
 process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
 
+if (process.env.PROVIDER_BROWSER_AUTOSTART !== '0') {
+  startTransient('dev:browser', 'browser')
+}
+
 start('dev:app', 'app')
-start('dev:runtime', 'runtime')
 start('dev:agent', 'agent')
