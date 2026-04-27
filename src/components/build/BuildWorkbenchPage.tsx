@@ -4,7 +4,6 @@
  * Features:
  * - Three.js ambient scene matching VoiceAgentVisualizer lighting exactly
  * - ambientLight 0.5, pointLight #2D3B87 at [10,10,10], pointLight #FFFFFF at [-10,-10,-10]
- * - Environment preset="night"
  * - Glassmorphic icosahedron orb with gentle breathing + rotation
  * - Drifting particle field for depth
  * - Color System: surface-950 (#050505), surface-900 (#0A0A0A), ink-inverse
@@ -16,7 +15,6 @@
 import { useEffect, useState, useRef, useMemo, memo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Environment } from '@react-three/drei'
 import * as THREE from 'three'
 import { useBuildStore } from '@/stores/buildStore'
 import { LeftRail } from './LeftRail'
@@ -252,8 +250,6 @@ function BuildScene() {
 
       <AmbientOrb />
       <AmbientParticles />
-
-      <Environment preset="night" />
     </>
   )
 }
