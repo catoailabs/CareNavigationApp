@@ -140,6 +140,7 @@ import {
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "./tool";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "./sources";
 import {
+  RunProjectPreview,
   WebPreview,
   WebPreviewBody,
   WebPreviewNavigation,
@@ -220,6 +221,10 @@ const CODE_TOOL_NAMES = [
   "electron_code",
 ];
 
+// Tools that *run* a code project / dev server and should render a live
+// web-preview of the running app rather than a plain terminal or sandbox.
+const RUN_PROJECT_TOOL_NAMES = ["run_project", "app_project", "dev_server"];
+
 const SHELL_TOOL_NAMES = [
   "shell",
   "terminal",
@@ -254,12 +259,10 @@ const CODEGEN_TOOL_NAMES = [
 const BROWSER_TOOL_NAMES = [
   "browser",
   "browser_automation",
-  "run_project",
   "electron_embed_browser",
   "ronbrowser",
   "browser_tools",
   "generate_document",
-  "app_project",
   "local_chromium_browser",
 ];
 
@@ -312,6 +315,27 @@ function isMediaTool(name: string, result: unknown): boolean {
       typeof (result as Record<string, string>).url === "string" &&
       /\.(png|jpg|jpeg|mp4|pdf)$/i.test((result as Record<string, string>).url))
   );
+}
+
+// A code project is "run" when a dev-server command is executed (npm run dev,
+// vite, flask run, rails server, …). Such tools render their running app in a
+// web-preview iframe instead of a plain terminal.
+const RUN_PROJECT_COMMAND_RE =
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b|\bvite\b|\bnext\s+(?:dev|start)\b|\bng\s+serve\b|\bnuxt\b|\bastro\s+dev\b|\bnodemon\b|\bserve\b|\bflask\s+run\b|\bmanage\.py\s+runserver\b|\buvicorn\b|\bgunicorn\b|\bstreamlit\s+run\b|\bpython\s+-m\s+http\.server\b|\brails\s+s(?:erver)?\b|\bphp\s+-S\b|\bphp\s+artisan\s+serve\b|\bdotnet\s+(?:run|watch)\b|\bcargo\s+run\b/i;
+
+// First loopback URL printed in the dev server's output (e.g. http://localhost:5173).
+function findLocalUrl(text: string): string | undefined {
+  const match = text.match(
+    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5}\S*/i
+  );
+  return match ? match[0].replace(/0\.0\.0\.0/, "localhost") : undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isRunProjectTool(toolName: string, args: Record<string, any>): boolean {
+  const lower = toolName.toLowerCase();
+  if (RUN_PROJECT_TOOL_NAMES.some((name) => lower.includes(name))) return true;
+  return RUN_PROJECT_COMMAND_RE.test(String(args?.command ?? args?.cmd ?? ""));
 }
 
 function getSourceUrl(src: SearchSource): string | undefined {
@@ -896,6 +920,60 @@ function CodegenTool({
 }
 
 /**
+ * Live preview for a *run* code project. Renders the dev server's startup logs
+ * in a terminal and, once it prints a local URL, the running app in a
+ * {@link RunProjectPreview} iframe.
+ */
+function RunProjectTool({
+  toolName,
+  args,
+  result,
+  isComplete,
+  isStreaming,
+}: {
+  toolName: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: Record<string, any>;
+  isComplete: boolean;
+  isStreaming: boolean;
+}) {
+  const command = String(args?.command ?? args?.cmd ?? toolName);
+  const output = String(result?.output ?? result?.stdout ?? result?.stderr ?? "");
+  const url =
+    (typeof result?.url === "string" && result.url) ||
+    findLocalUrl(output) ||
+    findLocalUrl(command);
+
+  return (
+    <ChainOfThoughtStep
+      icon={GlobeIcon}
+      label={`Run project: ${command}`}
+      status={isComplete ? "complete" : "active"}
+    >
+      <div className="mt-2 ml-1 space-y-3">
+        {output ? (
+          <Terminal autoScroll isStreaming={isStreaming && !isComplete} output={output}>
+            <TerminalHeader>
+              <TerminalTitle />
+              <div className="flex items-center gap-1">
+                <TerminalStatus />
+                <TerminalActions>
+                  <TerminalCopyButton />
+                </TerminalActions>
+              </div>
+            </TerminalHeader>
+            <TerminalContent />
+          </Terminal>
+        ) : null}
+        {url ? <RunProjectPreview key={url} url={url} /> : null}
+      </div>
+    </ChainOfThoughtStep>
+  );
+}
+
+/**
  * Browser-tool live preview only. The agent's browser is Chromium running on
  * its virtual desktop, so the browser tool streams that desktop (webtop / NoVNC
  * at :3001). Override the origin with VITE_AGENT_DESKTOP_URL when the desktop is
@@ -1176,6 +1254,18 @@ function ToolStep({
 
   if (isToolNameMatch(toolName, ENV_TOOL_NAMES)) {
     return <EnvTool args={args} />;
+  }
+
+  if (isRunProjectTool(toolName, args)) {
+    return (
+      <RunProjectTool
+        args={args}
+        isComplete={isComplete}
+        isStreaming={isStreaming}
+        result={result}
+        toolName={toolName}
+      />
+    );
   }
 
   if (isToolNameMatch(toolName, CODE_TOOL_NAMES)) {

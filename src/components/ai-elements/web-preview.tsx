@@ -279,3 +279,25 @@ export const WebPreviewConsole = ({
     </Collapsible>
   );
 };
+
+export type RunProjectPreviewProps = ComponentProps<"div"> & {
+  /** The local URL the running project is served from (e.g. http://localhost:5173). */
+  url: string;
+};
+
+/**
+ * A WebPreview variant for "run code" projects: renders the running dev server
+ * (`npm run dev`, `vite`, `flask run`, …) in an iframe with an editable URL bar.
+ */
+export const RunProjectPreview = ({
+  url,
+  className,
+  ...props
+}: RunProjectPreviewProps) => (
+  <WebPreview className={cn("h-[420px]", className)} defaultUrl={url} {...props}>
+    <WebPreviewNavigation>
+      <WebPreviewUrl />
+    </WebPreviewNavigation>
+    <WebPreviewBody />
+  </WebPreview>
+);

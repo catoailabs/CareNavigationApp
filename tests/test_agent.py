@@ -531,6 +531,55 @@ class CorsConfigurationTests(unittest.TestCase):
         self.assertNotIn("*", allow_methods)
 
 
+class AuthBypassFailClosedTests(unittest.TestCase):
+    """The Firebase auth bypass must never be honored in production."""
+
+    def setUp(self) -> None:
+        from server import firebase_admin_support
+
+        self.fas = firebase_admin_support
+
+    def test_bypass_active_in_local_dev(self) -> None:
+        with patch.dict(os.environ, {"FIREBASE_AUTH_DISABLED": "true"}, clear=True):
+            self.assertTrue(self.fas.auth_disabled())
+
+    def test_bypass_ignored_in_production(self) -> None:
+        # Even with the flag set, production enforces real auth (fail-closed).
+        with patch.dict(
+            os.environ,
+            {"FIREBASE_AUTH_DISABLED": "true", "APP_ENV": "production"},
+            clear=True,
+        ):
+            self.assertFalse(self.fas.auth_disabled())
+
+    def test_bypass_ignored_in_prod_alias(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"FIREBASE_AUTH_DISABLED": "true", "APP_ENV": "prod"},
+            clear=True,
+        ):
+            self.assertFalse(self.fas.auth_disabled())
+
+    def test_disabled_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(self.fas.auth_disabled())
+
+    def test_production_resolve_uid_requires_token(self) -> None:
+        from fastapi import HTTPException
+
+        class _Req:
+            headers: dict[str, str] = {}
+
+        with patch.dict(
+            os.environ,
+            {"FIREBASE_AUTH_DISABLED": "true", "APP_ENV": "production"},
+            clear=True,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                self.fas.resolve_uid(_Req())
+        self.assertEqual(ctx.exception.status_code, 401)
+
+
 class RotatingFileHandlerTests(unittest.TestCase):
     def test_logger_has_rotating_file_handler(self) -> None:
         handlers = [
@@ -542,6 +591,202 @@ class RotatingFileHandlerTests(unittest.TestCase):
         handler = handlers[0]
         self.assertEqual(handler.maxBytes, 50 * 1024 * 1024)
         self.assertEqual(handler.backupCount, 5)
+
+
+class GoogleConnectRoundTripTests(unittest.TestCase):
+    """Connect/status/use/disconnect round-trip for the tenant-store Google creds.
+
+    Verifies the POST writes ``GOOGLE_OAUTH_CREDENTIALS`` as a sensitive (masked)
+    tenant var, status reports connected with granted scopes (never the secret),
+    ``use_google`` builds creds from the stored value via the request overlay, and
+    DELETE revokes + removes it. The tenant store primitives, ``resolve_uid``, the
+    OAuth-app client config, and the network calls are all patched so no Firestore,
+    no dev JSON file, and no real network are touched.
+    """
+
+    UID = "google-test-uid"
+
+    def setUp(self) -> None:
+        from server import google_credentials, tenant_environment
+
+        self.tenant_environment = tenant_environment
+        self.google_credentials = google_credentials
+
+        # In-memory tenant store {uid: {name: entry}} mirroring _store_load shape.
+        self._store: dict[str, dict[str, dict[str, object]]] = {}
+
+        def fake_load(uid):  # noqa: ANN001
+            return {n: dict(e) for n, e in self._store.get(uid, {}).items()}
+
+        def fake_set(uid, name, value, sensitive):  # noqa: ANN001
+            self._store.setdefault(uid, {})[name] = {
+                "value": value,
+                "sensitive": sensitive,
+                "updated_at": "2026-01-01T00:00:00Z",
+                "decrypt_error": False,
+            }
+
+        def fake_delete(uid, name):  # noqa: ANN001
+            self._store.get(uid, {}).pop(name, None)
+
+        patches = [
+            patch.object(tenant_environment, "_store_load", side_effect=fake_load),
+            patch.object(tenant_environment, "_store_set", side_effect=fake_set),
+            patch.object(tenant_environment, "_store_delete", side_effect=fake_delete),
+            patch.object(agent.firebase_admin_support, "resolve_uid", return_value=self.UID),
+            patch.object(google_credentials, "_client_id", return_value="client-id-xyz"),
+            patch.object(google_credentials, "_client_secret", return_value="client-secret-abc"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+        self.client = TestClient(agent.app)
+
+    def test_connect_status_use_disconnect_round_trip(self) -> None:
+        gc = self.google_credentials
+        te = self.tenant_environment
+        gmail_scope = "https://www.googleapis.com/auth/gmail.readonly"
+        identity_scope = "https://www.googleapis.com/auth/userinfo.email"
+
+        # 1. CONNECT — exchange returns a refresh token + the granted scope.
+        with patch.object(
+            gc,
+            "exchange_authorization_code",
+            return_value={"refresh_token": "refresh-token-123", "scope": gmail_scope},
+        ) as exchange:
+            resp = self.client.post(
+                "/api/google/connect",
+                json={"code": "auth-code", "scopes": ["gmail.readonly"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["connected"])
+        self.assertIn(gmail_scope, body["scopes"])
+        self.assertIn(identity_scope, body["scopes"])
+        exchange.assert_called_once()
+
+        # Persisted as the sensitive var (encrypted-at-rest path => masked listing).
+        entry = self._store[self.UID]["GOOGLE_OAUTH_CREDENTIALS"]
+        self.assertTrue(entry["sensitive"])
+        stored = json.loads(str(entry["value"]))
+        self.assertEqual(stored["refresh_token"], "refresh-token-123")
+        self.assertIn(gmail_scope, stored["scopes"])
+        # SECURITY: the app-level OAuth client identity must NEVER be persisted in
+        # the model-reachable tenant blob. Only per-user secret material is stored;
+        # use_google re-attaches client_id/client_secret/token_uri from process env.
+        self.assertNotIn("client_id", stored)
+        self.assertNotIn("client_secret", stored)
+        self.assertNotIn("token_uri", stored)
+        self.assertNotIn("client-secret-abc", json.dumps(stored))
+
+        listing = te.tenant_env_list_for_uid(self.UID)
+        cred_row = next(r for r in listing if r["name"] == "GOOGLE_OAUTH_CREDENTIALS")
+        self.assertEqual(cred_row["value"], te.MASKED_SENTINEL)
+        self.assertTrue(cred_row["sensitive"])
+        self.assertNotIn("refresh-token-123", json.dumps(listing))
+
+        # 2. STATUS — connected, exposes granted scopes, never the secret value.
+        status = self.client.get("/api/google/status").json()
+        self.assertTrue(status["connected"])
+        self.assertIn(gmail_scope, status["scopes"])
+        self.assertNotIn("refresh-token-123", json.dumps(status))
+
+        # 3. USE — use_google resolves GOOGLE_OAUTH_CREDENTIALS from the bound
+        #    overlay and builds creds from that exact stored value.
+        from strands_tools.devops import use_google
+
+        sentinel_creds = object()
+        sentinel_service = object()
+        token = te.load_tenant_env(self.UID)
+        try:
+            with (
+                patch.object(
+                    use_google,
+                    "_credentials_from_oauth_value",
+                    return_value=sentinel_creds,
+                ) as from_oauth,
+                patch(
+                    "googleapiclient.discovery.build",
+                    return_value=sentinel_service,
+                ) as build_mock,
+            ):
+                service = use_google.get_google_service("gmail", "v1")
+            self.assertIs(service, sentinel_service)
+            from_oauth.assert_called_once()
+            passed_value = from_oauth.call_args.args[0]
+            self.assertIn("refresh-token-123", passed_value)
+            build_mock.assert_called_once()
+            self.assertIs(build_mock.call_args.kwargs["credentials"], sentinel_creds)
+        finally:
+            te.reset_tenant_env(token)
+
+        # 4. DISCONNECT — best-effort revoke with the stored refresh token, then
+        #    the var is removed and status reports disconnected.
+        with patch.object(gc, "revoke_token") as revoke:
+            disc = self.client.delete("/api/google/connect")
+        self.assertEqual(disc.status_code, 200)
+        self.assertFalse(disc.json()["connected"])
+        revoke.assert_called_once_with("refresh-token-123")
+        self.assertNotIn("GOOGLE_OAUTH_CREDENTIALS", self._store.get(self.UID, {}))
+
+        after = self.client.get("/api/google/status").json()
+        self.assertFalse(after["connected"])
+        self.assertEqual(after["scopes"], [])
+
+
+class GoogleCredentialReattachTests(unittest.TestCase):
+    """The app OAuth client identity is re-attached from process env at build
+    time and is never expected inside the stored (model-reachable) tenant blob.
+    """
+
+    def test_client_identity_pulled_from_env_not_blob(self) -> None:
+        from strands_tools.devops import use_google
+
+        # Stored blob carries ONLY per-user secret material — no app secret.
+        stored_blob = json.dumps(
+            {"refresh_token": "rt-abc", "scopes": ["s1"]}
+        )
+
+        captured: dict[str, object] = {}
+
+        class _FakeCreds:
+            valid = True
+            refresh_token = "rt-abc"
+
+        def _from_info(info, scopes=None):  # noqa: ANN001
+            captured["info"] = info
+            captured["scopes"] = scopes
+            return _FakeCreds()
+
+        fake_creds_mod = types.SimpleNamespace(
+            Credentials=types.SimpleNamespace(from_authorized_user_info=_from_info)
+        )
+        fake_req_mod = types.SimpleNamespace(Request=lambda: object())
+
+        env = {
+            "GOOGLE_OAUTH_CLIENT_ID": "app-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "app-client-secret",
+        }
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "google.oauth2.credentials": fake_creds_mod,
+                    "google.auth.transport.requests": fake_req_mod,
+                },
+            ),
+            patch.dict(os.environ, env, clear=False),
+        ):
+            creds = use_google._credentials_from_oauth_value(stored_blob, ["s1"])
+
+        self.assertIs(creds.__class__, _FakeCreds)
+        info = captured["info"]
+        # App identity injected from process env (never from the blob).
+        self.assertEqual(info["client_id"], "app-client-id")
+        self.assertEqual(info["client_secret"], "app-client-secret")
+        self.assertEqual(info["token_uri"], "https://oauth2.googleapis.com/token")
+        self.assertEqual(info["refresh_token"], "rt-abc")
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ import { TabAttachments } from '@/components/ai-elements/TabAttachment'
 import { SurfaceCard } from './ProviderUi'
 import { isBrowserExtensionBridgeAvailable } from '@/services/browserExtensionBridge'
 import { isCDPAvailable, loadRealTabs } from '@/services/tabService'
-import { fileToDataUrl } from '@/utils/file-utils'
+import { fileToDataUrl, makePastedTextFilename } from '@/utils/file-utils'
 import { cn } from '@/utils/cn'
 import type {
   ProviderComposerFile,
@@ -47,6 +47,7 @@ import {
 import { usePromptMentions } from './usePromptMentions'
 
 const EASE = [0.16, 1, 0.3, 1] as const
+const PASTE_TO_ATTACHMENT_THRESHOLD = 200
 
 const ATTACHMENT_BUTTON_CLASS =
   'group flex h-12 w-12 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.04] text-white/68 transition-all duration-200 hover:border-indigo-300/30 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50'
@@ -394,6 +395,47 @@ export function ProviderPromptInput({
     textareaRef.current?.focus()
   }
 
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Pasted files (images, documents) take precedence and are attached directly.
+    const pastedFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => Boolean(f))
+
+    if (pastedFiles.length > 0) {
+      event.preventDefault()
+      const composerFiles = await Promise.all(
+        pastedFiles.map(async (file) => ({
+          id: createLocalId(),
+          filename: file.name,
+          mediaType: file.type || 'application/octet-stream',
+          type: 'file' as const,
+          url: await fileToDataUrl(file),
+        })),
+      )
+      setFiles((current) => [...current, ...composerFiles])
+      return
+    }
+
+    // Large text pastes become a text/plain attachment rendered inline.
+    const text = event.clipboardData.getData('text/plain')
+    if (text && text.length > PASTE_TO_ATTACHMENT_THRESHOLD) {
+      event.preventDefault()
+      const file = new File([text], makePastedTextFilename(), { type: 'text/plain' })
+      const url = await fileToDataUrl(file)
+      setFiles((current) => [
+        ...current,
+        {
+          id: createLocalId(),
+          filename: file.name,
+          mediaType: 'text/plain',
+          type: 'file' as const,
+          url,
+        },
+      ])
+    }
+  }
+
   const submit = () => {
     if (!hasContent || isStreaming) return
 
@@ -549,6 +591,7 @@ export function ProviderPromptInput({
                     }
                   }
                 }}
+                onPaste={handlePaste}
                 placeholder="Search for a provider, compare candidates, or attach context to shape the next answer..."
                 className={cn(
                   'w-full resize-none bg-transparent text-white placeholder:text-white/26 focus:outline-none',

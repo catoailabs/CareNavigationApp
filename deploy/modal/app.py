@@ -82,9 +82,17 @@ agent_image = (
     .env(
         {
             "PYTHONPATH": "/app:/app/tools/ronbrowser_agent_tools/src",
-            # APP_ENV=development boots without CORS_ALLOWED_ORIGINS for a first deploy.
-            # After you know the web URL, set APP_ENV=production + CORS_ALLOWED_ORIGINS
-            # in the `care-navigation` secret and redeploy.
+            # FIRST-DEPLOY BOOTSTRAP ONLY. APP_ENV=development boots without
+            # CORS_ALLOWED_ORIGINS and with the auth bypass active so you can
+            # smoke-test before Firebase/CORS are provisioned.
+            #
+            # SECURITY: before exposing this to real users you MUST set
+            # APP_ENV=production (+ CORS_ALLOWED_ORIGINS, Firebase service
+            # account) in the `care-navigation` secret and redeploy. At
+            # APP_ENV=production the FIREBASE_AUTH_DISABLED flag is IGNORED
+            # (server.firebase_admin_support.auth_disabled is fail-closed), so
+            # real per-user auth is enforced and tenant isolation cannot silently
+            # collapse onto a single dev uid.
             "APP_ENV": "development",
             "STRANDS_AGENT_RELOAD": "0",
             "BYPASS_TOOL_CONSENT": "true",

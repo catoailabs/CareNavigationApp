@@ -1,49 +1,33 @@
-"""Per-user Google API credential provisioning and request-scoped injection.
+"""Google OAuth client helpers: token exchange, revocation, encryption, scopes.
 
 Responsibilities:
-  * Maintain a request-scoped ``contextvars.ContextVar`` holding the signed-in
-    user's Google OAuth ``Credentials`` so ``use_google.get_google_service`` can
-    consult it BEFORE falling back to global env credentials (multi-user safe).
-  * Encrypt/decrypt refresh tokens at rest (Fernet).
-  * Persist token metadata per Firebase uid in Firestore.
+  * Encrypt/decrypt secrets at rest (Fernet) — reused by the tenant env store.
   * Exchange GIS authorization codes for tokens, and revoke on disconnect.
+  * Build refreshed ``google.oauth2`` Credentials from a refresh token.
   * Expose a scope catalog mapping friendly service keys to Google scope URLs.
+
+Per-user credential persistence and the request-scoped overlay now live in
+``server.tenant_environment``: the user's authorized-user JSON is stored as the
+sensitive tenant variable ``GOOGLE_OAUTH_CREDENTIALS`` (encrypted at rest) and
+read from the request overlay by ``use_google``. This module no longer keeps a
+standalone Google store or credential contextvar.
 
 Configuration (env vars):
   GOOGLE_OAUTH_CLIENT_ID         – OAuth 2.0 client id (web application)
   GOOGLE_OAUTH_CLIENT_SECRET     – OAuth 2.0 client secret
-  GOOGLE_TOKEN_ENCRYPTION_KEY    – urlsafe base64 Fernet key for refresh tokens
-  GOOGLE_FIRESTORE_COLLECTION    – collection name (default: "google_integrations")
+  GOOGLE_TOKEN_ENCRYPTION_KEY    – urlsafe base64 Fernet key for secrets at rest
 """
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import os
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_REVOKE_URI = "https://oauth2.googleapis.com/revoke"
-DEFAULT_COLLECTION = "google_integrations"
-
-# Request-scoped credential carrier. Set at /api/chat entry and read inside
-# tool execution (same async task), so concurrent users never share creds.
-current_google_credentials: "contextvars.ContextVar[Optional[InjectedGoogleCredentials]]" = (
-    contextvars.ContextVar("current_google_credentials", default=None)
-)
-
-
-@dataclass
-class InjectedGoogleCredentials:
-    """Holds a live google credentials object plus the granted scopes."""
-
-    credentials: Any
-    scopes: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -194,64 +178,6 @@ def _client_secret() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Firestore store
-# ---------------------------------------------------------------------------
-
-
-def _collection_name() -> str:
-    return os.getenv("GOOGLE_FIRESTORE_COLLECTION", DEFAULT_COLLECTION).strip() or DEFAULT_COLLECTION
-
-
-def _doc_ref(uid: str) -> Any:
-    from server.firebase_admin_support import get_firestore_client
-
-    return get_firestore_client().collection(_collection_name()).document(uid)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def get_connection(uid: str) -> Optional[dict[str, Any]]:
-    """Return the stored Google integration doc for a uid, or None."""
-    snapshot = _doc_ref(uid).get()
-    if not snapshot.exists:
-        return None
-    data = snapshot.to_dict() or {}
-    return data
-
-
-def save_connection(uid: str, *, refresh_token: str, scopes: list[str]) -> None:
-    """Encrypt the refresh token and upsert the Firestore doc for a uid."""
-    existing = get_connection(uid) or {}
-    payload = {
-        "encrypted_refresh_token": encrypt_secret(refresh_token),
-        "scopes": scopes,
-        "connected_at": existing.get("connected_at", _now_iso()),
-        "updated_at": _now_iso(),
-    }
-    _doc_ref(uid).set(payload)
-
-
-def delete_connection(uid: str) -> None:
-    """Delete the stored Google integration doc for a uid."""
-    _doc_ref(uid).delete()
-
-
-def connection_status(uid: str) -> dict[str, Any]:
-    """Return a UI-friendly status payload for a uid."""
-    data = get_connection(uid)
-    if not data:
-        return {"connected": False, "scopes": []}
-    return {
-        "connected": True,
-        "scopes": list(data.get("scopes", [])),
-        "connected_at": data.get("connected_at"),
-        "updated_at": data.get("updated_at"),
-    }
-
-
-# ---------------------------------------------------------------------------
 # Token exchange / refresh / revoke
 # ---------------------------------------------------------------------------
 
@@ -313,24 +239,3 @@ def build_credentials(refresh_token: str, scopes: list[str]) -> Any:
     creds.refresh(Request())
     return creds
 
-
-def load_user_credentials(uid: str) -> Optional[InjectedGoogleCredentials]:
-    """Load, decrypt, and refresh credentials for a uid.
-
-    Returns None when the user has no stored connection. Raises RuntimeError
-    when refresh fails (revoked/expired grant) so the caller can surface a
-    reconnect prompt.
-    """
-    data = get_connection(uid)
-    if not data:
-        return None
-    encrypted = data.get("encrypted_refresh_token")
-    if not encrypted:
-        return None
-    scopes = list(data.get("scopes", []))
-    refresh_token = decrypt_secret(str(encrypted))
-    try:
-        creds = build_credentials(refresh_token, scopes)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"Google credential refresh failed for uid {uid}: {exc}") from exc
-    return InjectedGoogleCredentials(credentials=creds, scopes=scopes)

@@ -55,9 +55,11 @@ logger = logging.getLogger(__name__)
 # Same grammar the legacy store enforced.
 ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
-# A name is "sensitive" (encrypted at rest, masked to the model) when it looks
-# like a credential. Substring match on the upper-cased name.
-_SENSITIVE_TOKENS = ("TOKEN", "SECRET", "KEY", "AUTH", "PASSWORD", "CREDENTIAL", "PRIVATE")
+# Every tenant-supplied variable is treated as sensitive — encrypted at rest
+# and masked to the model. The store cannot know what a value actually is: a
+# credit-card number, a membership id, a policy number, a one-time code, or a
+# plain note all look the same. Guessing from the NAME is unsafe, so we never
+# guess. If a tenant put it here, it is private. Full stop.
 
 # Process-level names a tenant may NEVER write or shadow. Superset of the legacy
 # environment_store.PROTECTED_VARS plus the backend's own infra/app secrets.
@@ -118,8 +120,10 @@ def is_process_protected(name: str) -> bool:
 
 
 def is_sensitive_name(name: str) -> bool:
-    upper = name.upper()
-    return any(token in upper for token in _SENSITIVE_TOKENS)
+    # Policy: ALL tenant variables are sensitive. We do not classify by name.
+    # Kept as a function (rather than inlining ``True``) so every call site keeps
+    # a single, auditable source of truth for the masking/encryption decision.
+    return True
 
 
 def _validate_name(name: str) -> str:
@@ -230,7 +234,13 @@ def _firestore_load(uid: str) -> dict[str, dict[str, Any]]:
     for snapshot in _vars_collection(uid).stream():
         name = snapshot.id
         data = snapshot.to_dict() or {}
-        sensitive = bool(data.get("sensitive"))
+        # Sensitivity is policy-driven on read, not just whatever was stored.
+        # ``is_sensitive_name`` now returns True for every variable, so legacy
+        # docs written under the old name-based heuristic (sensitive=False,
+        # stored plaintext) are still masked to the model immediately, before
+        # any at-rest backfill runs. The OR keeps this correct even if the
+        # policy ever narrows again.
+        sensitive = bool(data.get("sensitive")) or is_sensitive_name(name)
         encrypted = bool(data.get("encrypted"))
         raw = data.get("value", "")
         value: Optional[str]
@@ -268,6 +278,43 @@ def _firestore_set(uid: str, name: str, value: str, sensitive: bool) -> None:
 
 def _firestore_delete(uid: str, name: str) -> None:
     _vars_collection(uid).document(name).delete()
+
+
+def migrate_encrypt_at_rest(uid: str) -> dict[str, int]:
+    """Re-encrypt any legacy plaintext docs for one uid (operator backfill).
+
+    Under the current policy every variable is sensitive and encrypted at rest.
+    Documents written before that policy may still be stored as plaintext
+    (``encrypted=False``). This walks the uid's ``vars`` collection and rewrites
+    each plaintext doc as encrypted + sensitive. It is idempotent (already-
+    encrypted docs are skipped) and only touches that uid's own records, so it is
+    safe to re-run. NOT auto-invoked — call it explicitly per uid from a migration
+    script or admin endpoint. The read path already masks legacy docs to the model
+    (see ``_firestore_load``); this closes the at-rest gap.
+
+    Returns ``{"scanned": N, "migrated": M}``.
+    """
+    scanned = 0
+    migrated = 0
+    for snapshot in _vars_collection(uid).stream():
+        scanned += 1
+        data = snapshot.to_dict() or {}
+        if bool(data.get("encrypted")):
+            continue
+        plaintext = str(data.get("value", ""))
+        snapshot.reference.set(
+            {
+                "sensitive": True,
+                "encrypted": True,
+                "value": _encrypt(plaintext),
+                "updated_at": _now_iso(),
+            },
+            merge=True,
+        )
+        migrated += 1
+    if migrated:
+        logger.info("migrate_encrypt_at_rest uid=%s scanned=%d migrated=%d", uid, scanned, migrated)
+    return {"scanned": scanned, "migrated": migrated}
 
 
 # -- Dev JSON-file primitives (no os.environ writes, no Firestore) ---------------
@@ -579,6 +626,22 @@ def tenant_env_metadata_for_uid(uid: str, name: str) -> Optional[dict[str, Any]]
         "present": True,
         "decrypt_error": bool(entry.get("decrypt_error")),
     }
+
+
+def tenant_env_get_for_uid(uid: str, name: str) -> Optional[str]:
+    """Return the decrypted PLAINTEXT value of one var for a uid, or None.
+
+    Loads the uid's store directly (no request overlay required). Returns None
+    when the variable is absent or a sensitive value failed to decrypt. Used by
+    backend endpoints that must act on the owner's own secret (e.g. revoking a
+    Google grant or reading granted scopes for the status payload). MUST NOT be
+    used to send a sensitive value to the model.
+    """
+    overlay = _store_load(uid)
+    clean = (name or "").strip()
+    if clean not in overlay:
+        return None
+    return overlay[clean].get("value")
 
 
 # ---------------------------------------------------------------------------

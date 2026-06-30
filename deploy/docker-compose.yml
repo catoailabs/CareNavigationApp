@@ -57,7 +57,7 @@ services:
       STRANDS_AGENT_PORT: "8000"
       STRANDS_AGENT_RELOAD: "0"
       BYPASS_TOOL_CONSENT: "true"
-      FIREBASE_AUTH_DISABLED: "${FIREBASE_AUTH_DISABLED:-true}"
+      FIREBASE_AUTH_DISABLED: "${FIREBASE_AUTH_DISABLED:-false}"
     expose:
       - "8000"
     volumes:

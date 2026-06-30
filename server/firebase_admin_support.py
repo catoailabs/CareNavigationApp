@@ -28,9 +28,30 @@ _app: Any = None
 _firestore_client: Any = None
 
 
+def _is_production() -> bool:
+    """True when running in a production deployment (APP_ENV=production/prod)."""
+    return os.getenv("APP_ENV", "").strip().lower() in {"production", "prod"}
+
+
 def auth_disabled() -> bool:
-    """Return True when Firebase auth verification is bypassed (local dev)."""
-    return os.getenv("FIREBASE_AUTH_DISABLED", "").strip().lower() == "true"
+    """Return True when Firebase auth verification is bypassed (local dev only).
+
+    Fail-closed: the bypass is NEVER honored in production. Even if
+    ``FIREBASE_AUTH_DISABLED=true`` is set in a production deployment, this
+    returns False and real Firebase verification is enforced. This guarantees a
+    misconfigured deploy cannot silently resolve every request to a single dev
+    uid and nullify per-user tenant isolation. The dangerous flag can only take
+    effect outside production (local dev / CI).
+    """
+    requested = os.getenv("FIREBASE_AUTH_DISABLED", "").strip().lower() == "true"
+    if requested and _is_production():
+        logger.error(
+            "FIREBASE_AUTH_DISABLED=true is IGNORED because APP_ENV=production. "
+            "Enforcing real Firebase auth to preserve per-user tenant isolation. "
+            "Unset the flag in the production environment to silence this."
+        )
+        return False
+    return requested
 
 
 def _load_credential() -> Any:

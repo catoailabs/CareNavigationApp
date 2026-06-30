@@ -22,10 +22,12 @@ from fastapi.responses import StreamingResponse
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.event_loop._retry import ModelRetryStrategy
+from strands.hooks import AfterToolCallEvent
 from strands.models import Model
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.types.agent import AgentInput
 from strands_xai import xAIModel
+from xai_sdk.tools import code_execution, web_search, x_search
 
 # Baseline tool modules. Every @tool-decorated callable in each of these is
 # registered on the agent automatically via `_tools_in(...)`. Adding a new
@@ -42,7 +44,6 @@ import strands_tools.agent_orchestration.graph as _m_graph
 import strands_tools.agent_orchestration.use_agent as _m_use_agent
 import strands_tools.research.perplexity_search_api as _m_perplexity_search
 import strands_tools.research.perplexity_deep_research as _m_perplexity_deep
-from server.environment_store import apply_persisted_environment
 from server import tool_catalog_support
 from server import skills_support
 from server import firebase_admin_support
@@ -133,7 +134,13 @@ DOCUMENT_MEDIA_TYPE_TO_FORMAT = {
 }
 
 load_dotenv(ENV_PATH)
-apply_persisted_environment()
+# NOTE: Persisted variables are NO LONGER applied to the process ``os.environ``
+# at startup. In the multi-tenant model every tenant's variables (including the
+# legacy dev JSON store, ``data/agent_environment.json``) are loaded into a
+# request-scoped overlay per uid (``tenant_environment.load_tenant_env``), so
+# writing them into the shared process environment at boot would leak one
+# tenant's secrets to every concurrently-served request. Process-level config
+# comes from ``.env`` / the real ``os.environ`` only (loaded above).
 
 # The use_google tool blocks on input() for mutative ops (e.g. gmail send)
 # unless consent is bypassed. In this web/server context there is no TTY, so a
@@ -149,6 +156,11 @@ Available tools:
 - perplexity_search_api: gather current public web sources for a provider or organization.
 - perplexity_deep_research: start or fetch longer-running research when the user wants a deeper dossier.
 
+Native Grok tools (run on xAI servers, invoke them directly when relevant):
+- web_search: search the live web for current information and cite sources.
+- x_search: search X (Twitter) for posts, trends, and public sentiment about a provider or organization.
+- code_execution: run Python to compute, parse, or analyze data when a calculation would help.
+
 Do not invent tool results, simulate workflows, or call tools that are not relevant to the user's request.
 If a tool is unavailable or returns no useful data, say that plainly and continue with the evidence you do have.
 """
@@ -158,6 +170,11 @@ def build_model() -> xAIModel:
     return xAIModel(
         client_args={"api_key": os.getenv("XAI_API_KEY", "")},
         model_id=os.getenv("STRANDS_MODEL_ID", DEFAULT_MODEL_ID),
+        # Grok's native server-side tools, executed on xAI's infrastructure.
+        # Per the Strands xAI provider docs, passing xai_tools also auto-enables
+        # use_encrypted_content so server-side tool state survives multi-turn.
+        xai_tools=[web_search(), x_search(), code_execution()],
+        include=["inline_citations"],
         params={
             "temperature": 0.2,
             "top_p": 0.9,
@@ -289,6 +306,87 @@ def _tool_result_payloads(
             "dynamic": True,
         },
     ]
+
+
+# Tools whose image output is an ephemeral *screen capture* (a full-page
+# browser/desktop screenshot) rather than a content image the model is meant to
+# reason over (e.g. ``image_reader``, ``generate_image``, DICOM viewers). Their
+# raw bytes are only useful at the moment they are produced; left in the
+# conversation history they balloon the model context (and cost) on every
+# subsequent turn. Add new screen-capture tools here as they are introduced.
+SCREEN_CAPTURE_TOOLS: frozenset[str] = frozenset(
+    {"browser", "local_chromium_browser", "use_computer", "desktop_screenshot"}
+)
+
+# Stand-in left in the model context where a screenshot was lifted out, so the
+# model still knows a capture happened without carrying the bytes.
+SCREENSHOT_CONTEXT_PLACEHOLDER = "[screenshot omitted from model context; shown to the user]"
+
+
+def _strip_screenshots_for_context(event: AfterToolCallEvent) -> None:
+    """Lift screen-capture screenshots out of the model context, buffering them.
+
+    Registered as an ``AfterToolCallEvent`` callback. For screen-capture tools
+    only (``SCREEN_CAPTURE_TOOLS``), each image block in the tool result is
+    replaced by a short text placeholder and the original image is stashed on
+    the agent's per-request ``_screenshot_buffer`` keyed by ``toolUseId``. The
+    streaming layer (:func:`strands_to_aisdk_stream`) drains that buffer and
+    re-emits the screenshot to the client as an AI SDK file part, so the user
+    still sees it without the bytes living in the model's context window.
+    """
+    tool_use = getattr(event, "tool_use", None) or {}
+    if tool_use.get("name") not in SCREEN_CAPTURE_TOOLS:
+        return
+    result = getattr(event, "result", None)
+    if not isinstance(result, dict):
+        return
+    content = result.get("content")
+    if not isinstance(content, list):
+        return
+
+    buffered: list[dict[str, Any]] = []
+    rewritten: list[Any] = []
+    for block in content:
+        image = block.get("image") if isinstance(block, dict) else None
+        source = image.get("source") if isinstance(image, dict) else None
+        raw = source.get("bytes") if isinstance(source, dict) else None
+        if isinstance(raw, (bytes, bytearray, memoryview)):
+            buffered.append({"format": str(image.get("format") or "png"), "bytes": bytes(raw)})
+            rewritten.append({"text": SCREENSHOT_CONTEXT_PLACEHOLDER})
+        else:
+            rewritten.append(block)
+
+    if not buffered:
+        return
+    result["content"] = rewritten
+    buffer = getattr(event.agent, "_screenshot_buffer", None)
+    if not isinstance(buffer, dict):
+        buffer = {}
+        event.agent._screenshot_buffer = buffer
+    buffer.setdefault(str(tool_use.get("toolUseId", "")), []).extend(buffered)
+
+
+def _drain_screenshot_file_parts(session_agent: Agent, tool_id: str) -> list[dict[str, Any]]:
+    """Pop any buffered screenshots for ``tool_id`` as AI SDK file parts.
+
+    Draining (rather than copying) guarantees a duplicate tool-result event for
+    the same ``toolUseId`` cannot re-emit the same screenshot twice.
+    """
+    buffer = getattr(session_agent, "_screenshot_buffer", None)
+    if not isinstance(buffer, dict):
+        return []
+    shots = buffer.pop(tool_id, None) or []
+    parts: list[dict[str, Any]] = []
+    for shot in shots:
+        raw = shot.get("bytes")
+        if not isinstance(raw, (bytes, bytearray, memoryview)):
+            continue
+        media_type = f"image/{str(shot.get('format') or 'png')}"
+        encoded = base64.b64encode(bytes(raw)).decode("ascii")
+        parts.append(
+            {"type": "file", "mediaType": media_type, "url": f"data:{media_type};base64,{encoded}"}
+        )
+    return parts
 
 
 def _extract_sources(tool_result: dict[str, Any]) -> list[dict[str, str]]:
@@ -624,6 +722,10 @@ async def strands_to_aisdk_stream(
             tool_result = event["tool_result"]
             for payload in _tool_result_payloads(tool_result, active_tools):
                 yield f"data: {json.dumps(payload)}\n\n"
+            for file_part in _drain_screenshot_file_parts(
+                session_agent, str(tool_result.get("toolUseId", ""))
+            ):
+                yield f"data: {json.dumps(file_part)}\n\n"
             for source in _extract_sources(tool_result):
                 yield (
                     f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': source['url'], 'title': source['title']})}\n\n"
@@ -637,6 +739,10 @@ async def strands_to_aisdk_stream(
                     tool_result = block["toolResult"]
                     for payload in _tool_result_payloads(tool_result, active_tools):
                         yield f"data: {json.dumps(payload)}\n\n"
+                    for file_part in _drain_screenshot_file_parts(
+                        session_agent, str(tool_result.get("toolUseId", ""))
+                    ):
+                        yield f"data: {json.dumps(file_part)}\n\n"
                     for source in _extract_sources(tool_result):
                         yield (
                             f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': source['url'], 'title': source['title']})}\n\n"
@@ -660,23 +766,22 @@ async def stream_with_request_context(
     prompt: AgentInput,
     session_agent: Agent,
     uid: str,
-    injected_google: Any | None,
 ) -> AsyncIterator[str]:
-    """Bind the request-scoped tenant env + Google credentials, then proxy the stream.
+    """Bind the request-scoped tenant env overlay, then proxy the stream.
 
-    Both contextvars are set inside this async generator (the same task that
-    drives ``stream_async``) so they propagate into tool execution, and are
-    reset when the stream completes or the client disconnects. The tenant
-    overlay scopes every ``environment`` tool read/write to ``uid`` so secrets
-    never bleed across concurrently served users.
+    The overlay is set inside this async generator (the same task that drives
+    ``stream_async``) so it propagates into tool execution, and is reset when
+    the stream completes or the client disconnects. The tenant overlay scopes
+    every ``environment`` tool read/write to ``uid`` so secrets never bleed
+    across concurrently served users. The user's Google credentials travel in
+    the overlay as ``GOOGLE_OAUTH_CREDENTIALS`` (read by ``use_google``); there
+    is no separate credential contextvar.
     """
     tenant_token = tenant_environment.load_tenant_env(uid)
-    google_token = google_credentials.current_google_credentials.set(injected_google)
     try:
         async for chunk in strands_to_aisdk_stream(prompt, session_agent):
             yield chunk
     finally:
-        google_credentials.current_google_credentials.reset(google_token)
         tenant_environment.reset_tenant_env(tenant_token)
 
 
@@ -764,17 +869,12 @@ async def chat_endpoint(request: Request) -> StreamingResponse:
     mentions = [str(m).strip() for m in (mentions or []) if str(m).strip()]
     system_prompt = _build_system_prompt_with_mentions(mentions)
 
-    # Load this user's Google credentials (if connected). A refresh failure
-    # (revoked/expired grant) is logged and treated as "not connected" so the
-    # agent surfaces a reconnect message rather than crashing the request.
-    injected_google = None
-    try:
-        injected_google = google_credentials.load_user_credentials(uid)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Google credential load failed for uid=%s: %s", uid, exc)
-
+    # The user's Google credentials (if connected) live in the tenant overlay as
+    # ``GOOGLE_OAUTH_CREDENTIALS`` and are bound for this request by
+    # ``stream_with_request_context`` -> ``load_tenant_env(uid)``. ``use_google``
+    # reads them from the overlay, so no separate credential injection is needed.
     logger.info(
-        "chat_request uid=%s message_count=%s trigger=%s last_role=%s converted_messages=%s session_id=%s mentions=%s google_connected=%s",
+        "chat_request uid=%s message_count=%s trigger=%s last_role=%s converted_messages=%s session_id=%s mentions=%s",
         uid,
         len(messages) if isinstance(messages, list) else 0,
         body.get("trigger"),
@@ -782,11 +882,10 @@ async def chat_endpoint(request: Request) -> StreamingResponse:
         len(prompt),
         session_id,
         len(mentions),
-        injected_google is not None,
     )
     session_agent = await _create_agent_for_request(None, prompt, session_id, system_prompt)
     return StreamingResponse(
-        stream_with_request_context(prompt, session_agent, uid, injected_google),
+        stream_with_request_context(prompt, session_agent, uid),
         media_type="text/event-stream",
         headers={
             "x-vercel-ai-ui-message-stream": "v1",
@@ -864,14 +963,45 @@ async def get_google_scopes() -> dict[str, Any]:
 
 @app.get("/api/google/status")
 async def get_google_status(request: Request) -> dict[str, Any]:
-    """Report whether the signed-in user has connected Google, and which scopes."""
+    """Report whether the signed-in user has connected Google, and which scopes.
+
+    Derived from the tenant store: presence of the sensitive
+    ``GOOGLE_OAUTH_CREDENTIALS`` var means "connected". The granted scopes are
+    parsed from the (owner-only) stored authorized-user JSON so the connect UI
+    can pre-check them. The secret itself is never returned.
+    """
     uid = firebase_admin_support.resolve_uid(request)
-    return google_credentials.connection_status(uid)
+    meta = tenant_environment.tenant_env_metadata_for_uid(uid, "GOOGLE_OAUTH_CREDENTIALS")
+    if not meta or not meta.get("present"):
+        return {"connected": False, "scopes": []}
+    scopes: list[str] = []
+    raw = tenant_environment.tenant_env_get_for_uid(uid, "GOOGLE_OAUTH_CREDENTIALS")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and isinstance(parsed.get("scopes"), list):
+                scopes = [str(s) for s in parsed["scopes"]]
+        except (ValueError, TypeError) as exc:
+            logger.warning("Failed to parse stored Google scopes for uid=%s: %s", uid, exc)
+    return {
+        "connected": True,
+        "scopes": scopes,
+        "updated_at": meta.get("updated_at"),
+    }
 
 
 @app.post("/api/google/connect")
 async def connect_google(request: Request) -> dict[str, Any]:
-    """Exchange a GIS authorization code for tokens and persist them per uid."""
+    """Exchange a GIS authorization code for tokens and persist them per uid.
+
+    Only the per-user secret material (the refresh token and the granted
+    scopes) is persisted, as the sensitive tenant var ``GOOGLE_OAUTH_CREDENTIALS``
+    (encrypted at rest by the tenant store), which ``use_google`` reads from the
+    request overlay. The app-level OAuth client id/secret are backend-owned,
+    process-protected values and are deliberately NOT stored here — they are
+    re-attached from process env at credential-build time so the app secret
+    never lands in a model-reachable tenant var.
+    """
     uid = firebase_admin_support.resolve_uid(request)
     body = await request.json()
     code = body.get("code")
@@ -900,22 +1030,36 @@ async def connect_google(request: Request) -> dict[str, Any]:
     if isinstance(granted, str) and granted.strip():
         scopes = google_credentials.resolve_scopes(granted.split())
 
-    google_credentials.save_connection(uid, refresh_token=str(refresh_token), scopes=scopes)
+    # SECURITY: persist ONLY the per-user secret material. The app-level OAuth
+    # client_id/client_secret/token_uri are backend-owned and process-protected
+    # (see tenant_environment._BASE_PROCESS_PROTECTED). They must never be copied
+    # into GOOGLE_OAUTH_CREDENTIALS, which is a tenant var the model can reference
+    # via ${env:...} and that is injected into tool subprocess environments.
+    # use_google re-attaches the app client identity from process env at build time.
+    authorized_user = {
+        "refresh_token": str(refresh_token),
+        "scopes": scopes,
+    }
+    tenant_environment.tenant_env_set_for_uid(
+        uid, "GOOGLE_OAUTH_CREDENTIALS", json.dumps(authorized_user)
+    )
     return {"success": True, "connected": True, "scopes": scopes}
 
 
 @app.delete("/api/google/connect")
 async def disconnect_google(request: Request) -> dict[str, Any]:
-    """Revoke the user's Google grant and delete the stored token doc."""
+    """Revoke the user's Google grant and delete the stored credential var."""
     uid = firebase_admin_support.resolve_uid(request)
-    data = google_credentials.get_connection(uid)
-    if data and data.get("encrypted_refresh_token"):
+    raw = tenant_environment.tenant_env_get_for_uid(uid, "GOOGLE_OAUTH_CREDENTIALS")
+    if raw:
         try:
-            refresh_token = google_credentials.decrypt_secret(str(data["encrypted_refresh_token"]))
-            google_credentials.revoke_token(refresh_token)
+            parsed = json.loads(raw)
+            refresh_token = parsed.get("refresh_token") if isinstance(parsed, dict) else None
+            if refresh_token:
+                google_credentials.revoke_token(str(refresh_token))
         except Exception as exc:  # noqa: BLE001 - revocation is best-effort
             logger.warning("Google revoke failed for uid=%s: %s", uid, exc)
-    google_credentials.delete_connection(uid)
+    tenant_environment.tenant_env_delete_for_uid(uid, "GOOGLE_OAUTH_CREDENTIALS")
     return {"success": True, "connected": False}
 
 

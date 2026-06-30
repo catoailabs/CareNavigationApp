@@ -194,7 +194,7 @@ authenticated account. Before this plan can run end-to-end:
 ## Tasks (ordered)
 
 > Status legend: [DONE] complete + validated · [PARTIAL] started, remainder noted · [TODO] not started.
-> 1 [DONE] · 2 [DONE] · 2b [DONE] · 3 [DONE] · 4 [PARTIAL] · 5 [TODO].
+> 1 [DONE] · 2 [DONE] · 2b [DONE] · 3 [DONE] · 4 [DONE] · 5 [DONE].
 > Handoff for remaining work: `.kilo/plans/1782780802999-handoff.md`.
 
 ### 1. [DONE] New module `server/tenant_environment.py`
@@ -249,7 +249,7 @@ authenticated account. Before this plan can run end-to-end:
   (local/dev). Tool signature unchanged.
 - Drop the `current_google_credentials` import/use.
 
-### 4. [PARTIAL] Wire `agent.py`
+### 4. [DONE] Wire `agent.py`
 - `/api/chat`: `resolve_uid` -> `load_tenant_env(uid)` to set the overlay for the request;
   reset the contextvars after streaming completes (replace the
   `stream_with_google_credentials` wrapper). Set the overlay from inside the request
@@ -267,7 +267,7 @@ authenticated account. Before this plan can run end-to-end:
 - Stop calling `apply_persisted_environment()` for tenant vars at startup (process config
   only; or gate behind dev mode).
 
-### 5. Retire the standalone Google store
+### 5. [DONE] Retire the standalone Google store
 - Remove `google_integrations` doc functions and `current_google_credentials` from
   `server/google_credentials.py` (keep OAuth/encryption/scope helpers). Update imports.
 

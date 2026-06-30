@@ -85,10 +85,13 @@ def _credentials_from_oauth_value(value: str, scopes: Optional[List[str]]):
     """Build refreshed OAuth user Credentials from a stored value.
 
     The value is either an authorized-user JSON blob (multi-tenant overlay, the
-    shape written by the Google connect flow:
-    ``{client_id, client_secret, refresh_token, scopes, token_uri}``) or a path
-    to such a JSON file (legacy/dev env). A fresh access token is minted from
-    the refresh token when one is not already present.
+    shape written by the Google connect flow: ``{refresh_token, scopes}``) or a
+    path to a full authorized-user JSON file (legacy/dev env). The app-level
+    OAuth client identity (``client_id``/``client_secret``/``token_uri``) is
+    NOT stored in the per-tenant blob — it is backend-owned and process-protected
+    so it can never reach the model. It is re-attached here from the backend
+    environment, which is required for the refresh-token exchange to run. A fresh
+    access token is minted from the refresh token when one is not already present.
     """
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -99,6 +102,22 @@ def _credentials_from_oauth_value(value: str, scopes: Optional[List[str]]):
     else:
         with open(raw, "r") as f:
             info = json.load(f)
+
+    # Re-attach the backend-owned OAuth client identity from process env. These
+    # are read from os.environ (never the tenant overlay) because they are
+    # process-protected app secrets; the stored tenant blob intentionally omits
+    # them. Existing values in `info` (legacy/dev files) are preserved.
+    if not info.get("token_uri"):
+        info["token_uri"] = os.getenv("GOOGLE_TOKEN_URI") or "https://oauth2.googleapis.com/token"
+    if not info.get("client_id"):
+        client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+        if client_id:
+            info["client_id"] = client_id
+    if not info.get("client_secret"):
+        client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+        if client_secret:
+            info["client_secret"] = client_secret
+
     creds = Credentials.from_authorized_user_info(info, scopes=scopes)
     if not creds.valid and creds.refresh_token:
         creds.refresh(Request())
