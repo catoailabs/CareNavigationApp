@@ -2,9 +2,9 @@
 
 Why this module exists
 ----------------------
-``os.environ`` is a single process-global namespace shared by every
-concurrently-served tenant. Writing tenant data into it (as the legacy
-``server/environment_store.py`` did) leaks one tenant's secrets to every
+``os.environ``) is a single process-global namespace shared by every
+concurrently-served tenant. Writing tenant data into it (as a process-global
+environment store would) leaks one tenant's secrets to every
 in-flight request. This module replaces that unsafe path with three scopes:
 
 * **Process env** (``os.environ``) – deploy config only (model keys, PATH,
@@ -23,27 +23,35 @@ in-flight request. This module replaces that unsafe path with three scopes:
 Lookup order for a value: **request overlay (tenant) -> os.environ (read-only)
 -> not found.**
 
-Local dev: when ``FIREBASE_AUTH_DISABLED=true`` the store is backed by the
-existing JSON file (``data/agent_environment.json``) keyed to the single dev
-uid, so the local single-user flow keeps working without Firestore.
+Local dev: when ``FIREBASE_AUTH_DISABLED=true`` the store is backed by a local
+JSON file instead of Firestore, but with **identical semantics** — variables are
+keyed per-uid and Fernet-encrypted at rest exactly as in Firestore. Dev therefore
+exercises the same multi-tenant isolation as production; there is no shared
+single-tenant store. If ``GOOGLE_TOKEN_ENCRYPTION_KEY`` is unset locally, a dev
+key is auto-generated and persisted beside the store file so encryption-at-rest
+works with zero setup.
 
 Configuration (env vars):
   GOOGLE_TOKEN_ENCRYPTION_KEY    – Fernet key (reused from server.google_credentials)
   TENANT_ENV_COLLECTION          – root collection (default: "tenant_environments")
   TENANT_PROTECTED_EXTRA         – comma-separated extra protected names
-  FIREBASE_AUTH_DISABLED         – "true" routes the store to the dev JSON fallback
-  DEV_FALLBACK_UID               – uid used by the dev fallback (default: "dev-user")
+  FIREBASE_AUTH_DISABLED         – "true" routes the store to the local dev file
+  DEV_FALLBACK_UID               – default uid for the dev fallback (default: "dev-user")
+  TENANT_ENV_DEV_FILE            – path to the local dev store (default: "data/tenant_environments.dev.json")
 """
 
 from __future__ import annotations
 
 import base64
 import contextvars
+import json
 import logging
 import os
 import re
+import threading
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -61,8 +69,8 @@ ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # plain note all look the same. Guessing from the NAME is unsafe, so we never
 # guess. If a tenant put it here, it is private. Full stop.
 
-# Process-level names a tenant may NEVER write or shadow. Superset of the legacy
-# environment_store.PROTECTED_VARS plus the backend's own infra/app secrets.
+# Process-level names a tenant may NEVER write or shadow: OS/runtime config plus
+# the backend's own infra/app secrets.
 # NOTE: ``GOOGLE_OAUTH_CREDENTIALS`` is intentionally NOT here — that is the
 # per-tenant Google credential blob this store is designed to hold. The
 # app-level OAuth client id/secret and the service-account path ARE protected.
@@ -196,12 +204,17 @@ def _decrypt(ciphertext: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dev fallback (JSON file, single dev uid) vs Firestore
+# Backend selection: local dev file vs Firestore (both per-uid + encrypted)
 # ---------------------------------------------------------------------------
 
 
 def _use_dev_fallback() -> bool:
-    """True when Firebase auth is disabled (local dev): use the JSON file."""
+    """True when Firebase auth is disabled (local dev): use the local file.
+
+    This selects only *where the bytes live* (local JSON file vs Firestore).
+    Both backends are per-uid and encrypted at rest with identical semantics,
+    so tenant isolation is the same regardless of which one is active.
+    """
     from server.firebase_admin_support import auth_disabled
 
     return auth_disabled()
@@ -317,69 +330,149 @@ def migrate_encrypt_at_rest(uid: str) -> dict[str, int]:
     return {"scanned": scanned, "migrated": migrated}
 
 
-# -- Dev JSON-file primitives (no os.environ writes, no Firestore) ---------------
+# -- Local dev store (per-uid JSON file, encrypted at rest) ----------------------
+#
+# Mirrors the Firestore backend exactly: one record per (uid, name), values
+# Fernet-encrypted at rest, sensitivity policy applied on read. The on-disk shape
+# is ``{"tenants": {uid: {name: {value, sensitive, encrypted, created_at,
+# updated_at}}}}`` so two dev users never share state. No os.environ writes.
+
+_DEV_STORE_LOCK = threading.RLock()
+
+
+def _dev_store_path() -> Path:
+    return Path(os.getenv("TENANT_ENV_DEV_FILE", "data/tenant_environments.dev.json"))
+
+
+def _dev_key_path() -> Path:
+    p = _dev_store_path()
+    return p.with_name(p.name + ".key")
+
+
+def _dev_fernet() -> Any:
+    """Fernet for the dev store.
+
+    Uses ``GOOGLE_TOKEN_ENCRYPTION_KEY`` when set (parity with prod). Otherwise
+    auto-generates and persists a local key beside the store file so dev gets
+    real encryption-at-rest with zero setup.
+
+    The key file is created atomically with ``O_CREAT | O_EXCL`` at mode 0o600,
+    so it is never momentarily world-readable (``write_text`` would create it
+    under the umask first) and concurrent first-time callers — including
+    separate worker processes sharing the same path — cannot clobber each
+    other's key: the loser of the race re-reads the winner's key rather than
+    overwriting the key that already encrypted persisted data.
+    """
+    from cryptography.fernet import Fernet
+
+    key = os.getenv("GOOGLE_TOKEN_ENCRYPTION_KEY", "").strip()
+    if not key:
+        key_path = _dev_key_path()
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        new_key = Fernet.generate_key().decode("utf-8")
+        try:
+            fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            key = key_path.read_text(encoding="utf-8").strip()
+        else:
+            try:
+                os.write(fd, new_key.encode("utf-8"))
+            finally:
+                os.close(fd)
+            key = new_key
+    return Fernet(key.encode("utf-8"))
+
+
+def _dev_encrypt(plaintext: str) -> str:
+    return _dev_fernet().encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+
+def _dev_decrypt(ciphertext: str) -> str:
+    return _dev_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+
+
+def _dev_read_all() -> dict[str, dict[str, dict[str, Any]]]:
+    path = _dev_store_path()
+    if not path.exists():
+        return {"tenants": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"tenants": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("tenants"), dict):
+        return {"tenants": {}}
+    return data
+
+
+def _dev_write_all(data: dict[str, Any]) -> None:
+    path = _dev_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _dev_load(uid: str) -> dict[str, dict[str, Any]]:
-    """Load the dev tenant's vars from the JSON file.
-
-    The dev file is a flat ``{name: value}`` list (legacy schema); in dev there
-    is a single tenant so the whole file is that tenant's env. Values are stored
-    in plaintext locally (the file was already plaintext) — sensitivity is
-    derived from the name for masking, but no encryption is applied in dev.
-    """
-    from server.environment_store import get_environment_variables, load_environment_store
-
-    store = load_environment_store()
-    updated: dict[str, str] = {}
-    for item in store.get("variables", []):
-        if isinstance(item, dict) and item.get("name"):
-            updated[str(item["name"])] = str(item.get("updatedAt", ""))
-
+    tenant = _dev_read_all()["tenants"].get(uid, {})
     out: dict[str, dict[str, Any]] = {}
-    for name, value in get_environment_variables().items():
+    for name, rec in tenant.items():
+        if not isinstance(rec, dict):
+            continue
+        sensitive = bool(rec.get("sensitive")) or is_sensitive_name(name)
+        encrypted = bool(rec.get("encrypted"))
+        raw = rec.get("value", "")
+        value: Optional[str]
+        decrypt_error = False
+        if encrypted:
+            try:
+                value = _dev_decrypt(str(raw))
+            except Exception as exc:  # noqa: BLE001 - rotated/invalid key
+                logger.warning("Failed to decrypt %s for uid=%s: %s", name, uid, exc)
+                value = None
+                decrypt_error = True
+        else:
+            value = str(raw)
         out[name] = {
             "value": value,
-            "sensitive": is_sensitive_name(name),
-            "updated_at": updated.get(name) or None,
-            "decrypt_error": False,
+            "sensitive": sensitive,
+            "updated_at": rec.get("updated_at"),
+            "decrypt_error": decrypt_error,
         }
     return out
 
 
 def _dev_set(uid: str, name: str, value: str, sensitive: bool) -> None:
-    """Persist to the dev JSON file WITHOUT touching os.environ."""
-    from server.environment_store import load_environment_store, save_environment_store
-
-    store = load_environment_store()
-    variables: list[dict[str, Any]] = list(store.get("variables", []))
-    now = _now_iso()
-    existing = next(
-        (item for item in variables if str(item.get("name", "")).strip() == name),
-        None,
-    )
-    if existing is not None:
-        existing["value"] = value
-        existing["updatedAt"] = now
-    else:
-        variables.append(
-            {"name": name, "value": value, "createdAt": now, "updatedAt": now}
-        )
-    store["variables"] = variables
-    save_environment_store(store)
+    """Persist to the per-uid dev file WITHOUT touching os.environ."""
+    with _DEV_STORE_LOCK:
+        data = _dev_read_all()
+        tenant = data["tenants"].setdefault(uid, {})
+        now = _now_iso()
+        existing = tenant.get(name)
+        record: dict[str, Any] = {
+            "sensitive": sensitive,
+            "encrypted": sensitive,
+            "value": _dev_encrypt(value) if sensitive else value,
+            "updated_at": now,
+        }
+        # Mirror Firestore's _firestore_set: set created_at only on first write.
+        # On update, carry the prior value through only if it was present (do not
+        # fabricate one), so the dev and Firestore backends stay identical.
+        if isinstance(existing, dict):
+            if "created_at" in existing:
+                record["created_at"] = existing["created_at"]
+        else:
+            record["created_at"] = now
+        tenant[name] = record
+        _dev_write_all(data)
 
 
 def _dev_delete(uid: str, name: str) -> None:
-    from server.environment_store import load_environment_store, save_environment_store
-
-    store = load_environment_store()
-    variables = [
-        item
-        for item in store.get("variables", [])
-        if str(item.get("name", "")).strip() != name
-    ]
-    store["variables"] = variables
-    save_environment_store(store)
+    with _DEV_STORE_LOCK:
+        data = _dev_read_all()
+        tenant = data["tenants"].get(uid)
+        if isinstance(tenant, dict) and name in tenant:
+            del tenant[name]
+            _dev_write_all(data)
 
 
 # -- Store dispatch --------------------------------------------------------------

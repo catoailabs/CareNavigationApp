@@ -10,6 +10,15 @@ from unittest.mock import MagicMock, patch
 import agent
 from fastapi.testclient import TestClient
 
+# Run the suite in the documented local/dev posture: Firebase auth bypassed.
+# This mirrors how the agent runs in development (.env.development /
+# scripts/run-provider-agent.sh default FIREBASE_AUTH_DISABLED=true), so
+# endpoint tests resolve to DEV_FALLBACK_UID without a token and the tenant
+# store uses the local JSON fallback instead of reaching for Firestore. Tests
+# that exercise production fail-closed behavior set their own env explicitly via
+# patch.dict(..., clear=True), so this default never masks them.
+os.environ.setdefault("FIREBASE_AUTH_DISABLED", "true")
+
 
 class BuildAgentTests(unittest.TestCase):
     def test_build_agent_relies_on_sdk_defaults_for_conversation_and_execution(self) -> None:
@@ -787,6 +796,84 @@ class GoogleCredentialReattachTests(unittest.TestCase):
         self.assertEqual(info["client_secret"], "app-client-secret")
         self.assertEqual(info["token_uri"], "https://oauth2.googleapis.com/token")
         self.assertEqual(info["refresh_token"], "rt-abc")
+
+
+class DevStoreIsolationTests(unittest.TestCase):
+    """The local dev backend must enforce the SAME per-uid isolation and
+    encryption-at-rest as Firestore. One dev user must never read another's
+    variables, and sensitive values must not sit on disk in plaintext."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        from server import tenant_environment
+
+        self.te = tenant_environment
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store_path = os.path.join(self._tmp.name, "tenant_environments.dev.json")
+        # No encryption key in env -> the dev store must auto-provision one.
+        self._saved_key = os.environ.pop("GOOGLE_TOKEN_ENCRYPTION_KEY", None)
+        if self._saved_key is not None:
+            self.addCleanup(
+                lambda: os.environ.__setitem__("GOOGLE_TOKEN_ENCRYPTION_KEY", self._saved_key)
+            )
+        p = patch.dict(os.environ, {"TENANT_ENV_DEV_FILE": self.store_path}, clear=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_each_uid_has_its_own_isolated_namespace(self) -> None:
+        te = self.te
+        te._dev_set("alice", "MEMBER_ID", "alice-secret", sensitive=True)
+        te._dev_set("bob", "MEMBER_ID", "bob-secret", sensitive=True)
+
+        alice = te._dev_load("alice")
+        bob = te._dev_load("bob")
+
+        self.assertEqual(alice["MEMBER_ID"]["value"], "alice-secret")
+        self.assertEqual(bob["MEMBER_ID"]["value"], "bob-secret")
+        # Cross-tenant read must be impossible.
+        self.assertNotIn("MEMBER_ID", te._dev_load("carol"))
+        # Deleting one uid's var leaves the other intact.
+        te._dev_delete("alice", "MEMBER_ID")
+        self.assertNotIn("MEMBER_ID", te._dev_load("alice"))
+        self.assertEqual(te._dev_load("bob")["MEMBER_ID"]["value"], "bob-secret")
+
+    def test_sensitive_values_are_encrypted_at_rest(self) -> None:
+        te = self.te
+        te._dev_set("alice", "MEMBER_ID", "plaintext-should-not-appear", sensitive=True)
+        with open(self.store_path, encoding="utf-8") as fh:
+            on_disk = fh.read()
+        self.assertNotIn("plaintext-should-not-appear", on_disk)
+        # But it round-trips back to plaintext on read.
+        self.assertEqual(
+            te._dev_load("alice")["MEMBER_ID"]["value"], "plaintext-should-not-appear"
+        )
+
+    def test_load_applies_sensitivity_policy(self) -> None:
+        te = self.te
+        te._dev_set("alice", "NOTE", "hello", sensitive=True)
+        self.assertTrue(te._dev_load("alice")["NOTE"]["sensitive"])
+
+    def test_auto_generated_key_is_not_world_readable(self) -> None:
+        import stat
+
+        te = self.te
+        te._dev_set("alice", "MEMBER_ID", "x", sensitive=True)
+        key_file = self.store_path + ".key"
+        self.assertTrue(os.path.exists(key_file))
+        mode = stat.S_IMODE(os.stat(key_file).st_mode)
+        # No group/other access to the decryption key sitting beside the store.
+        self.assertEqual(mode & 0o077, 0, f"key file mode too open: {oct(mode)}")
+
+    def test_created_at_preserved_across_updates(self) -> None:
+        te = self.te
+        te._dev_set("alice", "MEMBER_ID", "v1", sensitive=True)
+        first = te._dev_read_all()["tenants"]["alice"]["MEMBER_ID"]["created_at"]
+        te._dev_set("alice", "MEMBER_ID", "v2", sensitive=True)
+        rec = te._dev_read_all()["tenants"]["alice"]["MEMBER_ID"]
+        self.assertEqual(rec["created_at"], first)
+        self.assertEqual(te._dev_load("alice")["MEMBER_ID"]["value"], "v2")
 
 
 if __name__ == "__main__":

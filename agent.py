@@ -136,7 +136,7 @@ DOCUMENT_MEDIA_TYPE_TO_FORMAT = {
 load_dotenv(ENV_PATH)
 # NOTE: Persisted variables are NO LONGER applied to the process ``os.environ``
 # at startup. In the multi-tenant model every tenant's variables (including the
-# legacy dev JSON store, ``data/agent_environment.json``) are loaded into a
+# user's Google credentials) are loaded into a
 # request-scoped overlay per uid (``tenant_environment.load_tenant_env``), so
 # writing them into the shared process environment at boot would leak one
 # tenant's secrets to every concurrently-served request. Process-level config
@@ -203,7 +203,11 @@ def build_agent(
         "tools": build_baseline_tools(session_id),
         "agent_id": os.getenv("STRANDS_AGENT_ID", DEFAULT_AGENT_ID),
         "retry_strategy": retry_strategy or ModelRetryStrategy(),
-        "hooks": [tenant_env_hooks.TenantEnvHookProvider()],
+        "hooks": [
+            tenant_env_hooks.TenantEnvHookProvider(
+                after_tool_callbacks=[_strip_screenshots_for_context]
+            )
+        ],
     }
     if messages is not None:
         kwargs["messages"] = messages

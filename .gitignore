@@ -34,3 +34,9 @@ test.db
 # guidelines_vector_store.faiss is 2.8 GB and guidelines_vector_store.records.jsonl
 # is 504 MB; both exceed GitHub's 100 MB push limit.
 data/runtime/
+
+# Local dev tenant-environment store (per-uid, encrypted) and its auto-generated
+# Fernet key. Never committed — contains local tenant data and the dev key.
+/data/tenant_environments.dev.json
+/data/tenant_environments.dev.json.key
+/data/tenant_environments.dev.json.tmp
