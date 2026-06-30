@@ -29,4 +29,5 @@ export interface ProviderComposerSubmitPayload {
   files: ProviderComposerFile[]
   promptText: string
   tabAttachments: ProviderTabAttachment[]
+  mentions?: string[]
 }

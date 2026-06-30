@@ -71,6 +71,21 @@ from strands import tool
 from strands_tools.utils import console_util
 from strands_tools.utils.user_input import get_user_input
 
+# Execution-boundary env injection (Task 2b). The tenant overlay lives in this
+# app's server module; guard the import so the tool still works when imported
+# standalone (without ``server`` on the path), degrading to a no-op.
+try:
+    from server.tenant_environment import (
+        child_process_env as _child_process_env,
+        tenant_env_all as _tenant_env_all,
+    )
+
+    _TENANT_ENV_AVAILABLE = True
+except Exception:  # pragma: no cover - standalone import without server on path
+    _child_process_env = None  # type: ignore[assignment]
+    _tenant_env_all = None  # type: ignore[assignment]
+    _TENANT_ENV_AVAILABLE = False
+
 # Initialize logging
 logger = logging.getLogger(__name__)
 
@@ -120,6 +135,23 @@ class CommandExecutor:
                 old_tty = termios.tcgetattr(sys.stdin)
             except BaseException:
                 non_interactive_mode = True
+        # Build the child's environment in the PARENT (where the tenant overlay
+        # contextvar is bound) BEFORE forking. Tenant secrets are forwarded into
+        # the container via ``docker exec -e NAME`` (only names appear on the
+        # argv); their values travel through the docker client's own environment,
+        # which we hand to ``os.execvpe`` below. The parent ``os.environ`` is
+        # never mutated, so concurrently served tenants stay isolated. With no
+        # overlay bound this is a no-op (empty tenant set => plain ``os.environ``).
+        tenant_vars = _tenant_env_all() if (_TENANT_ENV_AVAILABLE and _tenant_env_all) else {}
+        child_env = (
+            _child_process_env()
+            if (_TENANT_ENV_AVAILABLE and _child_process_env)
+            else dict(os.environ)
+        )
+        env_flags: List[str] = []
+        for _tenant_name in sorted(tenant_vars):
+            env_flags.extend(["-e", _tenant_name])
+
         try:
             # Fork a new PTY
             pid, fd = pty.fork()
@@ -127,8 +159,13 @@ class CommandExecutor:
             if pid == 0:  # Child process
                 try:
                     # Execute inside the virtual desktop container
-                    os.execvp(
-                        "docker", ["docker", "exec", "-i", "-w", cwd, "ron-agent-desktop", "/bin/sh", "-c", command]
+                    os.execvpe(
+                        "docker",
+                        [
+                            "docker", "exec", "-i", *env_flags,
+                            "-w", cwd, "ron-agent-desktop", "/bin/sh", "-c", command,
+                        ],
+                        child_env,
                     )
                 except Exception as e:
                     logger.debug(f"Error in child: {e}")

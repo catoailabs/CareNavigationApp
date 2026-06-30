@@ -19,6 +19,8 @@ rm -f \
 
 exec "${BROWSER_BIN}" \
   --user-data-dir="${PROFILE_DIR}" \
+  --no-sandbox \
+  --disable-gpu \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port="${DEBUG_PORT}" \
   --disable-crash-reporter \

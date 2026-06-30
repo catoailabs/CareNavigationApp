@@ -168,6 +168,7 @@ services:
       PILLAR6_BROWSER_APP_NAME: chromium
       PILLAR6_BROWSER_DEBUG_PORT: "9222"
       PILLAR6_BROWSER_PROFILE: /workspace/.runtime/browser-profile
+      PILLAR6_BROWSER_START_URL: ${PILLAR6_BROWSER_START_URL:-http://openemr}
       PILLAR6_EXEC_SERVICE: agent-exec
     volumes:
       - virtual_monitor_config:/config

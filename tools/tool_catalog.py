@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from strands import Agent, ToolContext, tool
+from strands import ToolContext, tool
 
 import server.tool_catalog_support as catalog_support
 

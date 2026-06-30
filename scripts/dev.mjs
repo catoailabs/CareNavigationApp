@@ -2,6 +2,13 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import {
+  killExistingProjectProcesses,
+  portsInUse,
+  projectPorts,
+  runProjectCheck,
+  waitForPort,
+} from './dev-utils.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -127,9 +134,47 @@ function startTransient(script, name) {
 process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
 
+const check = runProjectCheck()
+const hadExisting = killExistingProjectProcesses(process.pid)
+if (hadExisting) {
+  const start = Date.now()
+  const deadline = start + 10000
+  let blocked = portsInUse(projectPorts())
+  while (blocked.length > 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+    blocked = portsInUse(projectPorts())
+  }
+  if (blocked.length > 0) {
+    console.error(`[dev] unable to free project ports: ${blocked.join(', ')}`)
+    process.exit(1)
+  }
+  console.log('[dev] project ports freed')
+} else if (check.project.length > 0) {
+  console.error(`[dev] project ports already in use and no matching processes found: ${check.project.join(', ')}`)
+  process.exit(1)
+}
+
 if (process.env.PROVIDER_BROWSER_AUTOSTART !== '0') {
   startTransient('dev:browser', 'browser')
 }
 
 start('dev:app', 'app')
 start('dev:agent', 'agent')
+
+;(async () => {
+  const appPort = projectPorts()[0] ?? 5173
+  const agentPort = projectPorts()[1] ?? 8000
+  const appReady = await waitForPort(appPort, '127.0.0.1', 30000)
+  if (!appReady) {
+    console.error(`[dev] app did not become ready on port ${appPort}`)
+    shutdown(1)
+    return
+  }
+  const agentReady = await waitForPort(agentPort, '127.0.0.1', 30000)
+  if (!agentReady) {
+    console.error(`[dev] agent did not become ready on port ${agentPort}`)
+    shutdown(1)
+    return
+  }
+  console.log('[dev] app and agent are ready')
+})()

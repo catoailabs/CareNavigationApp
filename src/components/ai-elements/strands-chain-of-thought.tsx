@@ -20,6 +20,7 @@ import {
   ListTodoIcon,
   MessageSquareIcon,
   SearchIcon,
+  Share2Icon,
   TerminalIcon,
   UserIcon,
   WrenchIcon,
@@ -27,6 +28,17 @@ import {
 import { memo, useMemo } from "react";
 
 import { Agent, AgentContent, AgentHeader, AgentInstructions } from "./agent";
+import {
+  foldGraphEvents,
+  GraphWorkflow,
+  type GraphEvent,
+} from "./graph-workflow";
+import {
+  JSXPreview,
+  JSXPreviewContent,
+  JSXPreviewError,
+} from "./jsx-preview";
+import type { TProps as JsxParserProps } from "react-jsx-parser";
 import {
   Attachment,
   AttachmentInfo,
@@ -40,7 +52,6 @@ import {
   ArtifactHeader,
   ArtifactTitle,
 } from "./artifact";
-import { CDPBrowserViewer } from "./CDPBrowserViewer";
 import { CodeBlock } from "./code-block";
 import {
   ChainOfThought,
@@ -159,6 +170,8 @@ const SUBAGENT_TOOL_NAMES = [
   "call_subagent",
   "use_agent",
 ];
+
+const GRAPH_TOOL_NAMES = ["graph", "agent_graph", "swarm", "workflow"];
 
 const SEARCH_TOOL_NAMES = ["search", "query", "lookup", "find", "fetch_data"];
 
@@ -409,6 +422,45 @@ function SubagentTool({
           </AgentInstructions>
         </AgentContent>
       </Agent>
+    </ChainOfThoughtStep>
+  );
+}
+
+/**
+ * Renders a Strands multi-agent Graph as a live React Flow DAG. The tool call is
+ * linked to a JSX Preview variant: the `<GraphWorkflow>` element is registered
+ * in the parser's component map and fed the folded event state via bindings, so
+ * the workflow is rendered dynamically from whatever the agent streamed.
+ */
+function GraphWorkflowTool({
+  events,
+  isComplete,
+  isStreaming,
+}: {
+  events: GraphEvent[];
+  isComplete: boolean;
+  isStreaming: boolean;
+}) {
+  const state = useMemo(() => foldGraphEvents(events), [events]);
+
+  return (
+    <ChainOfThoughtStep
+      icon={Share2Icon}
+      label="Agent Graph"
+      status={isComplete ? "complete" : "active"}
+    >
+      <JSXPreview
+        bindings={{ graph: state, streaming: isStreaming }}
+        className="mt-2 ml-1"
+        components={{
+          GraphWorkflow: GraphWorkflow,
+        } as unknown as JsxParserProps["components"]}
+        isStreaming={isStreaming}
+        jsx="<GraphWorkflow data={graph} isStreaming={streaming} />"
+      >
+        <JSXPreviewContent />
+        <JSXPreviewError />
+      </JSXPreview>
     </ChainOfThoughtStep>
   );
 }
@@ -843,6 +895,17 @@ function CodegenTool({
   );
 }
 
+/**
+ * Browser-tool live preview only. The agent's browser is Chromium running on
+ * its virtual desktop, so the browser tool streams that desktop (webtop / NoVNC
+ * at :3001). Override the origin with VITE_AGENT_DESKTOP_URL when the desktop is
+ * exposed elsewhere. Scoped to the browser tool — the virtual-desktop tool
+ * renders its own frame independently and is intentionally left untouched.
+ */
+const AGENT_BROWSER_DESKTOP_URL =
+  (import.meta.env.VITE_AGENT_DESKTOP_URL as string | undefined) ??
+  "http://localhost:3001";
+
 function BrowserTool({
   toolName,
   args,
@@ -882,7 +945,12 @@ function BrowserTool({
         </ArtifactHeader>
         <ArtifactContent className="h-[400px] overflow-hidden p-0">
           {isCDPManaged ? (
-            <CDPBrowserViewer />
+            <iframe
+              allow="clipboard-read; clipboard-write; display-capture"
+              className="h-full w-full select-none border-0 bg-black"
+              src={AGENT_BROWSER_DESKTOP_URL}
+              title="Agent Browser (Virtual Desktop)"
+            />
           ) : isComplete && result?.url ? (
             <WebPreview defaultUrl={result.url}>
               <WebPreviewNavigation>
@@ -1044,8 +1112,12 @@ function FallbackTool({
 
 function ToolStep({
   part,
+  graphEvents,
+  isStreaming = false,
 }: {
   part: ToolPart;
+  graphEvents?: GraphEvent[];
+  isStreaming?: boolean;
 }) {
   const baseToolName = getToolName(part);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1060,6 +1132,16 @@ function ToolStep({
     state === "output-error" ||
     state === "output-denied";
   const errorText = "errorText" in part ? part.errorText : undefined;
+
+  if (isToolNameMatch(toolName, GRAPH_TOOL_NAMES)) {
+    return (
+      <GraphWorkflowTool
+        events={graphEvents ?? []}
+        isComplete={isComplete}
+        isStreaming={isStreaming && !isComplete}
+      />
+    );
+  }
 
   if (isToolNameMatch(toolName, SUBAGENT_TOOL_NAMES)) {
     return <SubagentTool args={args} isComplete={isComplete} toolName={toolName} />;
@@ -1272,6 +1354,7 @@ export function StrandsChainOfThought({
     | { type: "source"; part: SourceUrlUIPart }
     | { type: "file"; part: FileUIPart }
   )[] = [];
+  const graphEventsByCall: Record<string, GraphEvent[]> = {};
 
   for (const part of message.parts) {
     if (part.type === "text") {
@@ -1292,6 +1375,14 @@ export function StrandsChainOfThought({
     }
     if (part.type === "file") {
       timelineParts.push({ type: "file", part });
+      continue;
+    }
+    if (part.type === "data-graph") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = (part as any).data as GraphEvent | undefined;
+      if (data?.toolCallId) {
+        (graphEventsByCall[data.toolCallId] ||= []).push(data);
+      }
       continue;
     }
   }
@@ -1339,6 +1430,10 @@ export function StrandsChainOfThought({
               if (item.type === "tool") {
                 return (
                   <ToolStep
+                    graphEvents={
+                      graphEventsByCall[item.part.toolCallId] ?? undefined
+                    }
+                    isStreaming={active}
                     key={`tool-${item.part.toolCallId || index}`}
                     part={item.part}
                   />

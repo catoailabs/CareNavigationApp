@@ -20,8 +20,8 @@ logging.getLogger("pypdf._reader").setLevel(logging.ERROR)
 logging.getLogger("pypdf._utils").setLevel(logging.ERROR)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_GUIDELINES_DIR = PROJECT_ROOT / "data" / "guidelines"
-DEFAULT_VECTOR_STORE_PATH = PROJECT_ROOT / "data" / "runtime" / "guidelines_vector_store.json"
+DEFAULT_GUIDELINES_DIR = PROJECT_ROOT / "src" / "data" / "Guidelines"
+DEFAULT_VECTOR_STORE_PATH = PROJECT_ROOT / "src" / "data" / "runtime" / "guidelines_vector_store.json"
 PERPLEXITY_GUIDELINE_EMBEDDING_MODEL = "pplx-embed-context-v1-4b"
 GUIDELINE_CONTEXT_WINDOW_CHARS = 220
 FAISS_BACKEND = "faiss"
@@ -52,6 +52,7 @@ DEFAULT_EMBED_BATCH_SIZE = 64
 CHECKPOINT_FSYNC_EVERY_BATCHES = 8
 RESUME_META_WRITE_EVERY_CHUNKS = 512
 CONTEXTUALIZED_EMBEDDINGS_DOC_TOKEN_BUDGET = 30_000
+CONTEXTUALIZED_EMBEDDINGS_HARD_TOKEN_LIMIT = 32_000
 APPROX_CHARS_PER_TOKEN = 3
 
 
@@ -1055,7 +1056,44 @@ def build_guideline_vector_store(
                     should_flush = True
                 elif pending_batch_tokens + item_tokens > CONTEXTUALIZED_EMBEDDINGS_DOC_TOKEN_BUDGET:
                     should_flush = True
-            if should_flush:
+            if should_flush or pending_batch_tokens + item_tokens > CONTEXTUALIZED_EMBEDDINGS_HARD_TOKEN_LIMIT:
+                if pending_batch and item_tokens > CONTEXTUALIZED_EMBEDDINGS_HARD_TOKEN_LIMIT:
+                    # Split oversized single chunk into smaller pieces so the
+                    # contextualized embedding document never exceeds the API limit.
+                    oversized_text = item["chunk_text"]
+                    safe_chunk_chars = max(1, (CONTEXTUALIZED_EMBEDDINGS_HARD_TOKEN_LIMIT - 1000) * APPROX_CHARS_PER_TOKEN)
+                    sub_chunks = _chunk_text(oversized_text, chunk_chars=safe_chunk_chars, chunk_overlap=chunk_overlap)
+                    if not sub_chunks:
+                        sub_chunks = [oversized_text]
+                    # Rebuild item(s) with the first sub-chunk and queue extras.
+                    item["chunk_text"] = sub_chunks[0]
+                    item["embedding_text"] = _contextualize_chunk(
+                        source_path=item["source_path"],
+                        source_name=item["file_path"].name,
+                        chunk_index=item["chunk_index"],
+                        total_chunks=item["total_chunks"],
+                        current_chunk=sub_chunks[0],
+                        previous_chunk=item.get("previous_chunk"),
+                        next_chunk=item.get("next_chunk"),
+                        context_window_chars=GUIDELINE_CONTEXT_WINDOW_CHARS,
+                    )
+                    item_tokens = _estimate_token_count(item["embedding_text"])
+                    for sub_idx, sub_chunk in enumerate(sub_chunks[1:], start=1):
+                        extra_item = dict(item)
+                        extra_item["chunk_index"] = f"{item['chunk_index']}.{sub_idx}"
+                        extra_item["chunk_text"] = sub_chunk
+                        extra_item["embedding_text"] = _contextualize_chunk(
+                            source_path=item["source_path"],
+                            source_name=item["file_path"].name,
+                            chunk_index=extra_item["chunk_index"],
+                            total_chunks=item["total_chunks"],
+                            current_chunk=sub_chunk,
+                            previous_chunk=sub_chunks[sub_idx - 1] if sub_idx > 1 else sub_chunks[0],
+                            next_chunk=sub_chunks[sub_idx + 1] if sub_idx + 1 < len(sub_chunks) else None,
+                            context_window_chars=GUIDELINE_CONTEXT_WINDOW_CHARS,
+                        )
+                        pending_batch.append(extra_item)
+                        pending_batch_tokens += _estimate_token_count(extra_item["embedding_text"])
                 submit_pending_batch()
             pending_batch.append(item)
             pending_batch_source_path = item_source_path

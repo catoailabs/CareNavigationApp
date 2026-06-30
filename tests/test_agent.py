@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging.handlers
 import os
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import agent
 from fastapi.testclient import TestClient
@@ -22,7 +23,14 @@ class BuildAgentTests(unittest.TestCase):
         self.assertEqual(built["system_prompt"], agent.SYSTEM_PROMPT)
         self.assertEqual(built["tools"], [])
         self.assertNotIn("callback_handler", built)
-        self.assertNotIn("hooks", built)
+        # Task 2b: the tenant-env execution-boundary hook is intentionally wired
+        # (${env:NAME} interception + output redaction). Other execution knobs
+        # still rely on SDK defaults.
+        self.assertIn("hooks", built)
+        self.assertEqual(len(built["hooks"]), 1)
+        self.assertIsInstance(
+            built["hooks"][0], agent.tenant_env_hooks.TenantEnvHookProvider
+        )
         self.assertNotIn("plugins", built)
         self.assertNotIn("tool_executor", built)
         self.assertNotIn("session_manager", built)
@@ -148,6 +156,7 @@ class ParseToolOutputTests(unittest.TestCase):
 class _FakeSessionAgent:
     def __init__(self, events: list[dict[str, object]]) -> None:
         self._events = events
+        self._screenshot_buffer: dict[str, list[dict[str, object]]] = {}
 
     async def stream_async(self, prompt):  # noqa: ANN001
         del prompt
@@ -292,6 +301,72 @@ class StreamTranslationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_input_available["input"], {"query": "test"})
         self.assertEqual(tool_output["output"], [{"status": "ok"}])
 
+    async def test_stream_emits_buffered_screenshot_as_file_part(self) -> None:
+        session_agent = _FakeSessionAgent(
+            [
+                {
+                    "type": "tool_result",
+                    "tool_result": {"toolUseId": "tool-9", "content": [{"text": "ok"}]},
+                },
+                {"result": {"stop_reason": "end_turn"}},
+            ]
+        )
+        # Simulate the AfterToolCall hook having lifted a screenshot out of context.
+        session_agent._screenshot_buffer = {"tool-9": [{"format": "jpeg", "bytes": b"IMG"}]}
+
+        payloads: list[object] = []
+        async for chunk in agent.strands_to_aisdk_stream(prompt=None, session_agent=session_agent):
+            if chunk == "data: [DONE]\n\n":
+                continue
+            payloads.append(json.loads(chunk.removeprefix("data: ").strip()))
+
+        file_parts = [p for p in payloads if isinstance(p, dict) and p.get("type") == "file"]
+        self.assertEqual(len(file_parts), 1)
+        self.assertEqual(file_parts[0]["mediaType"], "image/jpeg")
+        self.assertTrue(file_parts[0]["url"].startswith("data:image/jpeg;base64,"))
+        # Drained so a duplicate tool-result event cannot re-emit it.
+        self.assertIsNone(session_agent._screenshot_buffer.get("tool-9"))
+
+
+class ScreenshotContextGuardTests(unittest.TestCase):
+    def test_strip_removes_image_from_context_and_buffers_it(self) -> None:
+        agent_obj = types.SimpleNamespace()
+        event = types.SimpleNamespace(
+            result={
+                "toolUseId": "call_9",
+                "content": [
+                    {"text": "navigated"},
+                    {"image": {"format": "jpeg", "source": {"bytes": b"PNGDATA"}}},
+                ],
+            },
+            tool_use={"name": "local_chromium_browser", "toolUseId": "call_9"},
+            agent=agent_obj,
+        )
+
+        agent._strip_screenshots_for_context(event)
+
+        self.assertEqual(
+            event.result["content"],
+            [{"text": "navigated"}, {"text": agent.SCREENSHOT_CONTEXT_PLACEHOLDER}],
+        )
+        self.assertEqual(agent_obj._screenshot_buffer["call_9"][0]["bytes"], b"PNGDATA")
+
+    def test_strip_leaves_non_screen_capture_tool_images_intact(self) -> None:
+        agent_obj = types.SimpleNamespace()
+        event = types.SimpleNamespace(
+            result={
+                "toolUseId": "c",
+                "content": [{"image": {"format": "png", "source": {"bytes": b"x"}}}],
+            },
+            tool_use={"name": "image_reader", "toolUseId": "c"},
+            agent=agent_obj,
+        )
+
+        agent._strip_screenshots_for_context(event)
+
+        self.assertIn("image", event.result["content"][0])
+        self.assertFalse(hasattr(agent_obj, "_screenshot_buffer"))
+
 
 class ChatEndpointTests(unittest.TestCase):
     def test_chat_endpoint_passes_parts_based_messages_to_strands(self) -> None:
@@ -303,7 +378,7 @@ class ChatEndpointTests(unittest.TestCase):
             yield "data: [DONE]\n\n"
 
         with (
-            patch.object(agent, "build_agent", return_value=object()) as build_agent,
+            patch.object(agent, "build_agent", return_value=MagicMock()) as build_agent,
             patch.object(agent, "strands_to_aisdk_stream", side_effect=fake_stream),
         ):
             client = TestClient(agent.app)

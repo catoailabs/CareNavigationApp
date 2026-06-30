@@ -15,6 +15,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: true,
     proxy: {
       // Proxy to Chrome DevTools Protocol for real tab access
       '/api/chrome-tabs': {
@@ -29,6 +30,18 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/chrome-ws/, ''),
       },
       '/api/chat': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/api/settings': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/api/catalog': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/api/google': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },

@@ -1,0 +1,41 @@
+# Build context exclusions for the self-hosted deploy images (deploy/*).
+# Keep this lean so `web` and `agent` image builds stay fast and never copy
+# secrets, local caches, or the multi-GB runtime/browser-profile artifacts.
+
+# VCS / editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Node / frontend
+node_modules
+**/node_modules
+dist
+.vite
+
+# Python
+.venv
+venv
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local runtime state (never bake into an image)
+.strands-sessions
+logs
+*.log
+repl_state
+**/.runtime
+tools/.runtime
+
+# Secrets — never copy any real env file into an image layer
+.env
+.env.*
+!deploy/.env.example
+
+# Separate experimental Next.js subproject (not part of the main app/agent)
+ron

@@ -7,6 +7,7 @@ anyio==4.13.0
 attrs==26.1.0
 aws-requests-auth==0.4.3
 backoff==2.2.1
+bedrock-agentcore==1.1.0
 beautifulsoup4==4.14.3
 boto3==1.42.81
 botocore==1.42.81
@@ -24,9 +25,14 @@ faiss-cpu==1.13.2
 fastapi==0.135.3
 fastuuid==0.14.0
 filelock==3.25.2
+firebase-admin==7.4.0
 frozenlist==1.8.0
 fsspec==2026.3.0
 googleapis-common-protos==1.74.0
+google-api-python-client==2.198.0
+google-auth==2.55.1
+google-auth-httplib2==0.4.0
+google-auth-oauthlib==1.4.0
 greenlet==3.3.2
 grpcio==1.80.0
 h11==0.16.0

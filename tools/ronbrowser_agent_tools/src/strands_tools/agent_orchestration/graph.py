@@ -56,16 +56,14 @@ result = agent.tool.graph(
 ```
 """
 
-import datetime
 import logging
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from rich.box import ROUNDED
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 from strands import Agent, tool
 from strands.multiagent.graph import GraphBuilder
 
@@ -73,18 +71,6 @@ from strands_tools.utils import console_util
 from strands_tools.utils.models.model import create_model
 
 logger = logging.getLogger(__name__)
-
-
-def create_rich_table(console: Console, title: str, headers: List[str], rows: List[List[str]]) -> str:
-    """Create a rich formatted table"""
-    table = Table(title=title, box=ROUNDED, header_style="bold magenta")
-    for header in headers:
-        table.add_column(header)
-    for row in rows:
-        table.add_row(*row)
-    with console.capture() as capture:
-        console.print(table)
-    return capture.get()
 
 
 def create_rich_status_panel(console: Console, status: Dict) -> str:
@@ -142,7 +128,7 @@ def create_agent_with_model(
         Configured Agent instance
     """
     # Create model
-    model = create_model(provider=model_provider, config=model_settings)
+    model = create_model(provider=model_provider or "default", config=model_settings or {})
 
     # Determine tools
     agent_tools = []
@@ -260,52 +246,18 @@ class GraphManager:
             logger.error(f"Error creating graph {graph_id}: {str(e)}")
             return {"status": "error", "message": f"Error creating graph: {str(e)}"}
 
-    def execute_graph(self, graph_id: str, task: str) -> Dict:
-        """Execute a graph with the given task"""
+    async def stream_graph(self, graph_id: str, task: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a graph execution, yielding each SDK Graph event verbatim.
 
-        if graph_id not in self.graphs:
-            return {"status": "error", "message": f"Graph {graph_id} not found"}
-
-        try:
-            graph_info = self.graphs[graph_id]
-            graph = graph_info["graph"]
-
-            # Execute the graph
-            start_time = time.time()
-            result = graph(task)
-            execution_time = round((time.time() - start_time) * 1000)
-
-            # Update metadata with execution info
-            graph_info["metadata"]["last_execution"] = {
-                "task": task,
-                "status": result.status.value,
-                "completed_nodes": result.completed_nodes,
-                "failed_nodes": result.failed_nodes,
-                "execution_time": execution_time,
-                "timestamp": time.time(),
-            }
-
-            # Extract results text
-            results_text = []
-            for node_id, node_result in result.results.items():
-                agent_results = node_result.get_agent_results()
-                for agent_result in agent_results:
-                    results_text.append(f"Node {node_id}: {str(agent_result)}")
-
-            return {
-                "status": "success",
-                "message": f"Graph {graph_id} executed successfully",
-                "data": {
-                    "execution_time": execution_time,
-                    "completed_nodes": result.completed_nodes,
-                    "failed_nodes": result.failed_nodes,
-                    "results": results_text,
-                },
-            }
-
-        except Exception as e:
-            logger.error(f"Error executing graph {graph_id}: {str(e)}")
-            return {"status": "error", "message": f"Error executing graph: {str(e)}"}
+        Mirrors ``Graph.stream(input, options?)``: async generator yielding
+        ``MultiAgentStreamEvent`` dicts (node start/stream/stop, handoff) and a
+        final ``multiagent_result`` envelope carrying the ``MultiAgentResult``.
+        """
+        graph_info = self.graphs[graph_id]
+        graph = graph_info["graph"]
+        start_time = time.time()
+        async for event in graph.stream_async(task):
+            yield event
 
     def get_graph_status(self, graph_id: str) -> Dict:
         """Get status of a specific graph"""
@@ -402,7 +354,7 @@ _manager = GraphManager()
 
 
 @tool
-def graph(
+async def graph(
     action: str,
     graph_id: Optional[str] = None,
     topology: Optional[Dict] = None,
@@ -411,7 +363,7 @@ def graph(
     model_settings: Optional[Dict[str, Any]] = None,
     tools: Optional[List[str]] = None,
     agent: Optional[Any] = None,
-) -> Dict[str, Any]:
+) -> AsyncIterator[Dict[str, Any]]:
     """Create and manage multi-agent graphs using Strands SDK Graph implementation.
 
     This function provides functionality to create and manage multi-agent systems using
@@ -533,162 +485,124 @@ def graph(
     console = console_util.create()
 
     try:
-        if action == "create":
-            if not graph_id or not topology:
-                return {
-                    "status": "error",
-                    "content": [{"text": "graph_id and topology are required for create action"}],
-                }
-
-            result = _manager.create_graph(graph_id, topology, agent, model_provider, model_settings, tools)
-
-            if result["status"] == "success":
-                node_count = len(topology["nodes"])
-                edge_count = len(topology.get("edges", []))
-                entry_count = len(topology.get("entry_points", []))
-
-                panel_content = (
-                    f"✅ {result['message']}\n\n"
-                    f"[bold blue]Graph ID:[/bold blue] {graph_id}\n"
-                    f"[bold blue]Nodes:[/bold blue] {node_count}\n"
-                    f"[bold blue]Edges:[/bold blue] {edge_count}\n"
-                    f"[bold blue]Entry Points:[/bold blue] {entry_count}\n"
-                    f"[bold blue]Default Model:[/bold blue] {model_provider or 'parent'}\n"
-                    f"[bold blue]Default Tools:[/bold blue] {len(tools) if tools else 'parent'}"
-                )
-
-                panel = Panel(panel_content, title="Graph Created", box=ROUNDED)
-                with console.capture() as capture:
-                    console.print(panel)
-                result["rich_output"] = capture.get()
-
-        elif action == "execute":
+        if action == "execute":
             if not graph_id or not task:
-                return {
+                yield {
                     "status": "error",
                     "content": [{"text": "graph_id and task are required for execute action"}],
                 }
+                return
 
-            result = _manager.execute_graph(graph_id, task)
+            # One-shot ergonomics: auto-create from topology when not yet built.
+            if graph_id not in _manager.graphs:
+                if not topology:
+                    yield {
+                        "status": "error",
+                        "content": [{"text": f"Graph {graph_id} not found; pass topology to create it"}],
+                    }
+                    return
+                if agent is None:
+                    yield {
+                        "status": "error",
+                        "content": [{"text": "A parent agent is required to create the graph"}],
+                    }
+                    return
+                create = _manager.create_graph(graph_id, topology, agent, model_provider, model_settings, tools)
+                if create["status"] != "success":
+                    yield {"status": "error", "content": [{"text": create["message"]}]}
+                    return
 
-            if result["status"] == "success":
-                data = result["data"]
-                panel_content = (
-                    f"🚀 Graph execution completed successfully!\n\n"
-                    f"[bold blue]Graph ID:[/bold blue] {graph_id}\n"
-                    f"[bold blue]Task:[/bold blue] {task[:100]}{'...' if len(task) > 100 else ''}\n"
-                    f"[bold blue]Execution Time:[/bold blue] {data['execution_time']}ms\n"
-                    f"[bold blue]Completed Nodes:[/bold blue] {data['completed_nodes']}\n"
-                    f"[bold blue]Failed Nodes:[/bold blue] {data['failed_nodes']}\n\n"
-                    f"[bold magenta]Results:[/bold magenta]\n"
-                )
+            graph_meta = _manager.graphs[graph_id]["metadata"]["topology"]
+            yield {"type": "graph_topology", "graph_id": graph_id, "topology": graph_meta}
 
-                for result_text in data["results"][:3]:  # Show first 3 results
-                    panel_content += f"{result_text[:200]}{'...' if len(result_text) > 200 else ''}\n"
+            start_time = time.time()
+            final = None
+            async for event in _manager.stream_graph(graph_id, task):
+                final = event
+                yield event  # raw SDK MultiAgentStreamEvent dict -> ToolStreamEvent
 
-                if len(data["results"]) > 3:
-                    panel_content += f"... and {len(data['results']) - 3} more results"
+            execution_time = round((time.time() - start_time) * 1000)
+            completed = getattr(final.get("result"), "completed_nodes", 0) if isinstance(final, dict) else 0
+            failed = getattr(final.get("result"), "failed_nodes", 0) if isinstance(final, dict) else 0
+            _manager.graphs[graph_id]["metadata"]["last_execution"] = {
+                "task": task,
+                "completed_nodes": completed,
+                "failed_nodes": failed,
+                "execution_time": execution_time,
+                "timestamp": time.time(),
+            }
+            yield {
+                "status": "success",
+                "content": [
+                    {"text": f"Graph {graph_id} executed in {execution_time}ms ({completed} nodes, {failed} failed)."}
+                ],
+            }
+            return
 
-                panel = Panel(panel_content, title="Graph Execution Complete", box=ROUNDED)
-                with console.capture() as capture:
-                    console.print(panel)
-                result["rich_output"] = capture.get()
-
-        elif action == "status":
-            if not graph_id:
-                return {
+        if action == "create":
+            if not graph_id or not topology:
+                yield {
                     "status": "error",
-                    "content": [{"text": "graph_id is required for status action"}],
+                    "content": [{"text": "graph_id and topology are required for create action"}],
                 }
+                return
+            if agent is None:
+                yield {
+                    "status": "error",
+                    "content": [{"text": "A parent agent is required for create action"}],
+                }
+                return
+            result = _manager.create_graph(graph_id, topology, agent, model_provider, model_settings, tools)
+            node_count = len(topology["nodes"]) if topology else 0
+            message = (
+                f"Graph {graph_id} created with {node_count} nodes."
+                if result["status"] == "success"
+                else result["message"]
+            )
+            yield {"status": result["status"], "content": [{"text": message}]}
+            return
 
+        if action == "status":
+            if not graph_id:
+                yield {"status": "error", "content": [{"text": "graph_id is required for status action"}]}
+                return
             result = _manager.get_graph_status(graph_id)
             if result["status"] == "success":
                 result["rich_output"] = create_rich_status_panel(console, result["data"])
-
-        elif action == "list":
-            result = _manager.list_graphs()
-            if result["status"] == "success":
-                headers = [
-                    "Graph ID",
-                    "Nodes",
-                    "Edges",
-                    "Entry Points",
-                    "Last Executed",
-                ]
-                rows = []
-                for graph_data in result["data"]:
-                    last_exec = "Never"
-                    if graph_data["last_executed"]:
-                        last_exec = datetime.datetime.fromtimestamp(graph_data["last_executed"]).strftime(
-                            "%Y-%m-%d %H:%M"
-                        )
-
-                    rows.append(
-                        [
-                            graph_data["graph_id"],
-                            str(graph_data["node_count"]),
-                            str(graph_data["edge_count"]),
-                            str(graph_data["entry_points"]),
-                            last_exec,
-                        ]
-                    )
-                result["rich_output"] = create_rich_table(console, "Graphs", headers, rows)
-
-        elif action == "delete":
-            if not graph_id:
-                return {
-                    "status": "error",
-                    "content": [{"text": "graph_id is required for delete action"}],
-                }
-
-            result = _manager.delete_graph(graph_id)
-            if result["status"] == "success":
-                panel_content = f"🗑️ {result['message']}"
-                panel = Panel(panel_content, title="Graph Deleted", box=ROUNDED)
-                with console.capture() as capture:
-                    console.print(panel)
-                result["rich_output"] = capture.get()
-
-        else:
-            return {
-                "status": "error",
-                "content": [
-                    {"text": f"Unknown action: {action}. Valid actions: create, execute, status, list, delete"}
-                ],
-            }
-
-        # Process result for clean response
-        if result["status"] == "success":
-            if "data" in result:
-                if action == "create":
-                    clean_message = f"Graph {graph_id} created with {len(topology['nodes'])} nodes."
-                elif action == "execute":
-                    clean_message = f"Graph {graph_id} executed successfully in {result['data']['execution_time']}ms."
-                elif action == "status":
-                    clean_message = f"Graph {graph_id} status retrieved."
-                elif action == "list":
-                    clean_message = f"Listed {len(result['data'])} graphs."
-                elif action == "delete":
-                    clean_message = f"Graph {graph_id} deleted successfully."
-                else:
-                    clean_message = result.get("message", "Operation completed successfully.")
+                yield {"status": "success", "content": [{"text": f"Graph {graph_id} status retrieved."}]}
             else:
-                clean_message = result.get("message", "Operation completed successfully.")
+                yield {"status": "error", "content": [{"text": result["message"]}]}
+            return
 
-            return {"status": "success", "content": [{"text": clean_message}]}
-        else:
-            error_message = f"❌ Error: {result['message']}"
-            logger.error(error_message)
-            return {
-                "status": "error",
-                "content": [{"text": error_message}],
-            }
+        if action == "list":
+            result = _manager.list_graphs()
+            yield {"status": "success", "content": [{"text": f"Listed {len(result['data'])} graphs."}]}
+            return
+
+        if action == "delete":
+            if not graph_id:
+                yield {"status": "error", "content": [{"text": "graph_id is required for delete action"}]}
+                return
+            result = _manager.delete_graph(graph_id)
+            message = (
+                f"Graph {graph_id} deleted successfully."
+                if result["status"] == "success"
+                else result["message"]
+            )
+            yield {"status": result["status"], "content": [{"text": message}]}
+            return
+
+        yield {
+            "status": "error",
+            "content": [
+                {"text": f"Unknown action: {action}. Valid actions: create, execute, status, list, delete"}
+            ],
+        }
 
     except Exception as e:
         error_trace = traceback.format_exc()
-        error_msg = f"Error: {str(e)}\n\nTraceback:\n{error_trace}"
-        logger.error(f"\n[GRAPH TOOL ERROR]\n{error_msg}")
-        return {
+        logger.error(f"\n[GRAPH TOOL ERROR]\n{str(e)}\n{error_trace}")
+        yield {
             "status": "error",
             "content": [{"text": f"⚠️ Graph Error: {str(e)}"}],
         }

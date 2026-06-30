@@ -1,4 +1,4 @@
-import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import type { UIMessage } from 'ai'
 import { PROVIDER_COMPARE_LIMIT } from './constants'
 import {
@@ -12,6 +12,8 @@ interface ProviderThreadStateValue {
   threadId: string
   snapshot: ProviderThreadSnapshot
   isRunning: boolean
+  sendMessage: (text: string) => void
+  stop: () => void
   selectedProvider: ProviderSearchResult | null
   comparedProviders: ProviderSearchResult[]
   compareRows: ProviderCompareRow[]
@@ -150,12 +152,14 @@ export function ProviderThreadStateProvider({
   messages,
   sendMessage,
   isRunning,
+  onStop,
   children,
 }: {
   threadId: string
   messages: UIMessage[]
   sendMessage: (text: string) => void
   isRunning: boolean
+  onStop?: () => void
   children: ReactNode
 }) {
   const [selectedProviderNpi, setSelectedProviderNpi] = useState<string | null>(null)
@@ -265,6 +269,8 @@ export function ProviderThreadStateProvider({
     threadId,
     snapshot,
     isRunning,
+    sendMessage,
+    stop: onStop ?? (() => {}),
     selectedProvider,
     comparedProviders,
     compareRows,
@@ -283,6 +289,8 @@ export function ProviderThreadStateProvider({
   }), [
     threadId,
     isRunning,
+    sendMessage,
+    onStop,
     closeCompare,
     closeProfile,
     closeResearch,
@@ -309,3 +317,7 @@ export function ProviderThreadStateProvider({
 }
 
 export { ProviderThreadStateContext }
+
+export function useProviderThread(): ProviderThreadStateValue | null {
+  return useContext(ProviderThreadStateContext)
+}

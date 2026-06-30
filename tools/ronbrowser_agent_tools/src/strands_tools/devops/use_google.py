@@ -64,6 +64,61 @@ from strands import tool
 
 logger = logging.getLogger(__name__)
 
+
+def _tenant_env_get(name: str) -> Optional[str]:
+    """Resolve a Google credential variable from the per-tenant overlay.
+
+    The web backend binds a request-scoped, per-tenant environment overlay for
+    the duration of each request; ``tenant_env_get`` resolves the overlay first
+    and transparently falls back to ``os.environ`` when no overlay is bound
+    (local/CLI). The import is optional so this tool still works in standalone
+    contexts where the server package is absent.
+    """
+    try:
+        from server.tenant_environment import tenant_env_get
+    except Exception:  # noqa: BLE001 - server package not present in some contexts
+        return os.getenv(name)
+    return tenant_env_get(name)
+
+
+def _credentials_from_oauth_value(value: str, scopes: Optional[List[str]]):
+    """Build refreshed OAuth user Credentials from a stored value.
+
+    The value is either an authorized-user JSON blob (multi-tenant overlay, the
+    shape written by the Google connect flow:
+    ``{client_id, client_secret, refresh_token, scopes, token_uri}``) or a path
+    to such a JSON file (legacy/dev env). A fresh access token is minted from
+    the refresh token when one is not already present.
+    """
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    raw = (value or "").strip()
+    if raw.startswith("{"):
+        info = json.loads(raw)
+    else:
+        with open(raw, "r") as f:
+            info = json.load(f)
+    creds = Credentials.from_authorized_user_info(info, scopes=scopes)
+    if not creds.valid and creds.refresh_token:
+        creds.refresh(Request())
+    return creds
+
+
+def _credentials_from_service_account_value(value: str, scopes: Optional[List[str]]):
+    """Build service-account Credentials from a stored value.
+
+    The value is either a service-account JSON blob (multi-tenant overlay) or a
+    path to a service-account JSON file (legacy/dev env).
+    """
+    from google.oauth2 import service_account
+
+    raw = (value or "").strip()
+    if raw.startswith("{"):
+        info = json.loads(raw)
+        return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    return service_account.Credentials.from_service_account_file(raw, scopes=scopes)
+
 # Mutative operations that require confirmation
 MUTATIVE_OPERATIONS = [
     "create",
@@ -126,75 +181,72 @@ def get_google_service(
     """
     try:
         from googleapiclient.discovery import build
-        from google.oauth2 import service_account
-        from google.oauth2.credentials import Credentials
     except ImportError:
         raise ImportError(
             "Google API client not installed. Install with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
         )
 
+    # Per-tenant overlay resolution (multi-user safe). Credential variables are
+    # resolved from the request-scoped tenant overlay first, then os.environ.
+    # OAuth user credentials take priority before any service-account
+    # auto-detection so the agent acts on behalf of the signed-in user. Forcing
+    # service_account or api_key bypasses this intentionally.
+    if credentials is None and credential_type not in ("service_account", "api_key"):
+        oauth_value = _tenant_env_get("GOOGLE_OAUTH_CREDENTIALS")
+        if oauth_value:
+            if scopes is None:
+                scopes = get_default_scopes()
+            credentials = _credentials_from_oauth_value(oauth_value, scopes)
+            logger.debug("Using per-tenant OAuth user credentials")
+            return build(service_name, version, credentials=credentials)
+
     # Auto-detect credentials if not provided
     if credentials is None:
         # Force specific credential type if requested
         if credential_type == "service_account":
-            service_account_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-            if not service_account_file or not os.path.exists(service_account_file):
-                raise ValueError(
-                    "GOOGLE_APPLICATION_CREDENTIALS not set or file not found"
-                )
+            sa_value = _tenant_env_get("GOOGLE_APPLICATION_CREDENTIALS")
+            if not sa_value:
+                raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set")
 
             if scopes is None:
                 scopes = get_default_scopes()
 
-            credentials = service_account.Credentials.from_service_account_file(
-                service_account_file,
-                scopes=scopes,
-            )
+            credentials = _credentials_from_service_account_value(sa_value, scopes)
             logger.debug(f"Using service account with {len(scopes)} scopes")
 
         elif credential_type == "oauth":
-            oauth_file = os.getenv("GOOGLE_OAUTH_CREDENTIALS")
-            if not oauth_file or not os.path.exists(oauth_file):
-                raise ValueError("GOOGLE_OAUTH_CREDENTIALS not set or file not found")
+            oauth_value = _tenant_env_get("GOOGLE_OAUTH_CREDENTIALS")
+            if not oauth_value:
+                raise ValueError("GOOGLE_OAUTH_CREDENTIALS not set")
 
-            with open(oauth_file, "r") as f:
-                creds_data = json.load(f)
-                credentials = Credentials.from_authorized_user_info(creds_data)
+            if scopes is None:
+                scopes = get_default_scopes()
+
+            credentials = _credentials_from_oauth_value(oauth_value, scopes)
             logger.debug("Using OAuth credentials")
 
         elif credential_type == "api_key":
-            api_key = os.getenv("GOOGLE_API_KEY")
+            api_key = _tenant_env_get("GOOGLE_API_KEY")
             if not api_key:
                 raise ValueError("GOOGLE_API_KEY not set")
             return build(service_name, version, developerKey=api_key)
 
         else:
-            # Auto-detect: Try service account first
-            service_account_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-            if service_account_file and os.path.exists(service_account_file):
+            # Auto-detect: service account (OAuth already handled with priority above)
+            sa_value = _tenant_env_get("GOOGLE_APPLICATION_CREDENTIALS")
+            if sa_value:
                 # Use provided scopes or get defaults (fully dynamic!)
                 if scopes is None:
                     scopes = get_default_scopes()
 
-                credentials = service_account.Credentials.from_service_account_file(
-                    service_account_file,
-                    scopes=scopes,
-                )
+                credentials = _credentials_from_service_account_value(sa_value, scopes)
                 logger.debug(f"Using service account with {len(scopes)} scopes")
 
-            # Try OAuth credentials
-            elif os.getenv("GOOGLE_OAUTH_CREDENTIALS"):
-                oauth_file = os.getenv("GOOGLE_OAUTH_CREDENTIALS")
-                if oauth_file and os.path.exists(oauth_file):
-                    with open(oauth_file, "r") as f:
-                        creds_data = json.load(f)
-                        credentials = Credentials.from_authorized_user_info(creds_data)
-
             # Try API key for public APIs
-            elif os.getenv("GOOGLE_API_KEY"):
-                return build(
-                    service_name, version, developerKey=os.getenv("GOOGLE_API_KEY")
-                )
+            else:
+                api_key = _tenant_env_get("GOOGLE_API_KEY")
+                if api_key:
+                    return build(service_name, version, developerKey=api_key)
 
     return build(service_name, version, credentials=credentials)
 

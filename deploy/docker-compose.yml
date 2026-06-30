@@ -1,0 +1,110 @@
+# Self-hosted Care Navigation stack: web UI + agent backend + agent virtual desktop.
+#
+# Deploy as a "Docker Compose" resource in Coolify, or run directly on any Docker
+# host with:  cd deploy && cp .env.example .env && (edit .env) && docker compose up -d --build
+#
+# Exposure model (security):
+#   - web           : published (the only public entrypoint by default)
+#   - agent         : internal only  (FastAPI :8000 never published)
+#   - agent-desktop : Chromium CDP :9222 internal only; webtop GUI :3000 published
+#                     on DESKTOP_PORT behind built-in basic auth.
+
+name: care-navigation
+
+services:
+  # ---- Frontend SPA + reverse proxy ----------------------------------------
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_AUTH_DISABLED: "${VITE_AUTH_DISABLED:-true}"
+        VITE_AGENT_DESKTOP_URL: "${VITE_AGENT_DESKTOP_URL:-}"
+        VITE_FIREBASE_API_KEY: "${VITE_FIREBASE_API_KEY:-}"
+        VITE_FIREBASE_AUTH_DOMAIN: "${VITE_FIREBASE_AUTH_DOMAIN:-}"
+        VITE_FIREBASE_PROJECT_ID: "${VITE_FIREBASE_PROJECT_ID:-}"
+        VITE_FIREBASE_STORAGE_BUCKET: "${VITE_FIREBASE_STORAGE_BUCKET:-}"
+        VITE_FIREBASE_MESSAGING_SENDER_ID: "${VITE_FIREBASE_MESSAGING_SENDER_ID:-}"
+        VITE_FIREBASE_APP_ID: "${VITE_FIREBASE_APP_ID:-}"
+        VITE_GOOGLE_OAUTH_CLIENT_ID: "${VITE_GOOGLE_OAUTH_CLIENT_ID:-}"
+    image: care-navigation-web:latest
+    restart: unless-stopped
+    depends_on:
+      - agent
+      - agent-desktop
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks:
+      - carenav
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---- Agent backend (FastAPI + Strands + xAI Grok) ------------------------
+  agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent
+    image: care-navigation-agent:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      STRANDS_AGENT_HOST: "0.0.0.0"
+      STRANDS_AGENT_PORT: "8000"
+      STRANDS_AGENT_RELOAD: "0"
+      BYPASS_TOOL_CONSENT: "true"
+      FIREBASE_AUTH_DISABLED: "${FIREBASE_AUTH_DISABLED:-true}"
+    expose:
+      - "8000"
+    volumes:
+      - agent_sessions:/app/.strands-sessions
+      - agent_logs:/app/logs
+    networks:
+      - carenav
+
+  # ---- Agent virtual desktop (webtop XFCE + autostarting Chromium/CDP) ------
+  agent-desktop:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent-desktop
+    image: care-navigation-agent-desktop:latest
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-UTC}"
+      TITLE: "Ron Agent Desktop"
+      # Built-in basic auth for the browser-accessible desktop. REQUIRED.
+      CUSTOM_USER: "${DESKTOP_USER:-ron}"
+      PASSWORD: "${DESKTOP_PASSWORD:?Set DESKTOP_PASSWORD in deploy/.env}"
+      # Long-lived Chromium with CDP enabled on the internal network only.
+      PILLAR6_REMOTE_RUNTIME: "1"
+      PILLAR6_BROWSER_APP_NAME: "chromium"
+      PILLAR6_BROWSER_DEBUG_PORT: "9222"
+      PILLAR6_BROWSER_DEBUG_ADDRESS: "0.0.0.0"
+      PILLAR6_BROWSER_PROFILE: "/workspace/.runtime/browser-profile"
+      PILLAR6_BROWSER_START_URL: "${DESKTOP_START_URL:-https://www.google.com}"
+    expose:
+      - "9222"
+    ports:
+      - "${DESKTOP_PORT:-3001}:3000"
+    volumes:
+      - agent_desktop_config:/config
+      - agent_desktop_workspace:/workspace
+    networks:
+      - carenav
+
+networks:
+  carenav:
+    driver: bridge
+
+volumes:
+  agent_sessions:
+  agent_logs:
+  agent_desktop_config:
+  agent_desktop_workspace:

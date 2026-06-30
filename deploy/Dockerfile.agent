@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+#
+# Agent backend image: the FastAPI + Strands app (agent:app) served by uvicorn.
+# Built on requirements-ci.txt — the documented minimal surface needed to import
+# agent.py and run the wired baseline tools (npiLookup + the two Perplexity tools).
+
+FROM python:3.13-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app:/app/tools/ronbrowser_agent_tools/src
+
+WORKDIR /app
+
+# Runtime libs: curl for the healthcheck, libgomp1 for faiss-cpu's OpenMP runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps first so the layer caches independently of app code.
+COPY requirements-ci.txt ./
+RUN pip install -r requirements-ci.txt
+
+# Application code + the tool tree the baseline loader imports by file path,
+# plus on-disk data (guidelines, etc.). Layout mirrors the repo so the
+# Path(__file__).resolve().parents[...] lookups in agent.py/server/tools resolve.
+COPY agent.py ./
+COPY server ./server
+COPY tools ./tools
+COPY data ./data
+
+# Writable runtime dirs: rotating logs + persisted Strands sessions.
+RUN mkdir -p /app/logs /app/.strands-sessions
+
+ENV APP_ENV=production \
+    STRANDS_AGENT_HOST=0.0.0.0 \
+    STRANDS_AGENT_PORT=8000 \
+    STRANDS_AGENT_RELOAD=0 \
+    BYPASS_TOOL_CONSENT=true
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/api/settings/environment >/dev/null || exit 1
+
+CMD ["uvicorn", "agent:app", "--host", "0.0.0.0", "--port", "8000"]

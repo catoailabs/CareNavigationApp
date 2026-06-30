@@ -64,6 +64,36 @@ See the environment function docstring for more details on available actions and
 import os
 from typing import Any, Dict, List, Optional
 
+# Route ALL variable access through the multi-tenant, request-scoped store
+# (server/tenant_environment.py). This tool operates on the *current tenant's*
+# request overlay — NEVER on the process-global ``os.environ`` — so concurrent
+# users can never read or clobber each other's variables (including their
+# Google credentials). The project root is on sys.path when this tool is loaded
+# by the agent; guard against standalone imports.
+try:
+    from server.tenant_environment import (
+        MASKED_SENTINEL,
+        is_process_protected as _is_process_protected,
+        is_sensitive_name as _is_sensitive_name,
+        process_protected_names as _process_protected_names,
+        tenant_env_delete as _tenant_env_delete,
+        tenant_env_list as _tenant_env_list,
+        tenant_env_metadata as _tenant_env_metadata,
+        tenant_env_set as _tenant_env_set,
+    )
+
+    _TENANT_ENV_AVAILABLE = True
+except Exception:  # pragma: no cover - standalone import without server on path
+    _TENANT_ENV_AVAILABLE = False
+    MASKED_SENTINEL = "[set · hidden]"
+    _is_process_protected = None  # type: ignore[assignment]
+    _is_sensitive_name = None  # type: ignore[assignment]
+    _process_protected_names = None  # type: ignore[assignment]
+    _tenant_env_delete = None  # type: ignore[assignment]
+    _tenant_env_list = None  # type: ignore[assignment]
+    _tenant_env_metadata = None  # type: ignore[assignment]
+    _tenant_env_set = None  # type: ignore[assignment]
+
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -147,60 +177,24 @@ Key Features:
 }
 
 
-# Protected variables that can't be modified
-PROTECTED_VARS = {"PATH", "PYTHONPATH", "STRANDS_HOME", "SHELL", "USER", "HOME"}
+# Protected variables that can't be modified. Fallback set used only when the
+# tenant store is unavailable (standalone import); normally the authoritative
+# list comes from ``server.tenant_environment.process_protected_names()``.
+PROTECTED_VARS = {"PATH", "PYTHONPATH", "STRANDS_HOME", "SHELL", "USER", "HOME", "BYPASS_TOOL_CONSENT"}
 
 
-def mask_sensitive_value(name: str, value: str) -> str:
-    """
-    Mask sensitive values for display to protect security-related information.
-
-    This function detects common patterns in environment variable names that might
-    contain sensitive information (like tokens, passwords, keys) and masks their
-    values to prevent accidental exposure.
-
-    Args:
-        name: The name of the environment variable to check
-        value: The actual value that might need masking
-
-    Returns:
-        str: The masked value (if sensitive) or original value (if not sensitive)
-    """
-    if any(sensitive in name.upper() for sensitive in ["TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH"]):
-        if value:
-            return f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "****"
-    return value
+def _is_protected(name: str) -> bool:
+    """True when ``name`` is a process-protected variable a tenant may not modify."""
+    if _TENANT_ENV_AVAILABLE and _is_process_protected is not None:
+        return _is_process_protected(name)
+    return name in PROTECTED_VARS
 
 
-def format_env_vars_table(env_vars: Dict[str, str], masked: bool, prefix: Optional[str] = None) -> Table:
-    """
-    Format environment variables as a rich table with proper styling.
-
-    This function creates a visually formatted table of environment variables with
-    clear indicators for protected variables and proper masking of sensitive values.
-
-    Args:
-        env_vars: Dictionary of environment variables (name: value pairs)
-        masked: Whether to mask sensitive values like tokens and passwords
-        prefix: Optional prefix filter to only show variables starting with this string
-
-    Returns:
-        Table: A Rich library Table object ready for display
-    """
-    table = Table(title="Environment Variables", show_header=True, box=box.ROUNDED)
-    table.add_column("Protected", style="yellow")
-    table.add_column("Name", style="cyan")
-    table.add_column("Value", style="green")
-
-    for name, value in sorted(env_vars.items()):
-        if prefix and not name.startswith(prefix):
-            continue
-
-        protected = "🔒" if name in PROTECTED_VARS else ""
-        display_value = mask_sensitive_value(name, value) if masked else value
-        table.add_row(protected, name, str(display_value))
-
-    return table
+def _is_sensitive(name: str) -> bool:
+    """True when ``name`` looks like a credential (value must never be divulged)."""
+    if _TENANT_ENV_AVAILABLE and _is_sensitive_name is not None:
+        return _is_sensitive_name(name)
+    return any(token in name.upper() for token in ("TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH"))
 
 
 def format_operation_preview(
@@ -240,7 +234,7 @@ def format_operation_preview(
     table.add_row("Action", f"[{action_style}]{action.upper()}[/{action_style}]")
 
     if name:
-        protected = name in PROTECTED_VARS
+        protected = _is_protected(name)
         name_style = "red" if protected else "white"
         table.add_row(
             "Variable",
@@ -252,7 +246,7 @@ def format_operation_preview(
         table.add_row("Prefix Filter", prefix)
 
     # Add warning for protected variables
-    if name and name in PROTECTED_VARS:
+    if name and _is_protected(name):
         table.add_row(
             "⚠️ Warning",
             "[red]This is a protected system variable that cannot be modified[/red]",
@@ -278,38 +272,6 @@ def format_operation_preview(
         + ("✓" if os.environ.get("BYPASS_TOOL_CONSENT", "").lower() == "true" else "✗")
         + "[/dim]",
     )
-
-
-def format_env_vars(env_vars: Dict[str, str], masked: bool, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Format environment variables for structured display in tool results.
-
-    This function creates a consistent data structure for environment variables
-    that can be used in tool results, with proper masking and filtering.
-
-    Args:
-        env_vars: Dictionary of environment variables (name: value pairs)
-        masked: Whether to mask sensitive values
-        prefix: Optional prefix filter to only include variables starting with this string
-
-    Returns:
-        List[Dict[str, Any]]: List of formatted variable entries with metadata
-    """
-    formatted = []
-
-    for name, value in sorted(env_vars.items()):
-        if prefix and not name.startswith(prefix):
-            continue
-
-        formatted.append(
-            {
-                "name": name,
-                "value": mask_sensitive_value(name, value) if masked else value,
-                "protected": name in PROTECTED_VARS,
-            }
-        )
-
-    return formatted
 
 
 def format_success_message(message: str) -> Panel:
@@ -420,9 +382,10 @@ def environment(
 
     Notes:
         - The ENV var "BYPASS_TOOL_CONSENT" can be set to "true" to bypass confirmation prompts
-        - Protected variables include PATH, PYTHONPATH, STRANDS_HOME, SHELL, USER, HOME
+        - Protected variables include PATH, PYTHONPATH, STRANDS_HOME, SHELL, USER, HOME, BYPASS_TOOL_CONSENT
         - Sensitive variables are detected by keywords in their names (TOKEN, SECRET, etc.)
         - For security reasons, values of sensitive variables are masked in output
+        - Set/delete actions are persisted to the agent environment store
     """
     console = console_util.create()
 
@@ -446,9 +409,6 @@ def environment(
         "masked": masked,
     }
 
-    # Get environment variables at runtime
-    env_vars_masked_default = os.getenv("ENV_VARS_MASKED_DEFAULT", "true").lower() == "true"
-
     # Check for BYPASS_TOOL_CONSENT mode
     strands_dev = os.environ.get("BYPASS_TOOL_CONSENT", "").lower() == "true"
 
@@ -464,41 +424,68 @@ def environment(
     try:
         action = requested_action
 
+        if not _TENANT_ENV_AVAILABLE:
+            msg = (
+                "Environment tool is not connected to the tenant store "
+                "(server.tenant_environment unavailable). Variables cannot be "
+                "managed in this context."
+            )
+            console.print(format_error_message(msg))
+            return {"toolUseId": tool_use_id, "status": "error", "content": [{"text": msg}]}
+
         # Action processing starts here
 
         if action == "list":
             prefix = tool_input.get("prefix")
-            masked = tool_input.get("masked", env_vars_masked_default)
 
-            # Format rich table
-            table = format_env_vars_table(dict(os.environ), masked=masked, prefix=prefix)
+            # Source of truth: the CURRENT tenant's request overlay. Each entry
+            # is already model-safe (``display`` is the masked sentinel for
+            # sensitive vars, plaintext for the rest). Process-global os.environ
+            # is intentionally NOT listed — it holds backend deploy secrets.
+            entries = _tenant_env_list() if _tenant_env_list is not None else []
+            if prefix:
+                entries = [e for e in entries if e["name"].startswith(str(prefix))]
 
-            # Format output
+            # Rich table for the operator console
+            table = Table(title="Environment Variables", show_header=True, box=box.ROUNDED)
+            table.add_column("Sensitive", style="yellow")
+            table.add_column("Name", style="cyan")
+            table.add_column("Value", style="green")
+            for e in entries:
+                flag = "🔒" if e.get("sensitive") else ""
+                table.add_row(flag, e["name"], str(e.get("display", "")))
+
             if prefix:
                 title = f"[bold blue]Environment Variables[/bold blue] (prefix=[yellow]{prefix}[/yellow])"
             else:
                 title = "[bold blue]Environment Variables[/bold blue]"
 
-            # Display rich output
             console.print("")
             console.print(Panel(table, title=title, border_style="blue", box=box.ROUNDED))
 
-            # Format plain text for return
-            env_vars = format_env_vars(dict(os.environ), masked=masked, prefix=prefix)
+            # Model-safe plain text for return
             lines = []
-            for var in env_vars:
-                protected = "🔒" if var["protected"] else "  "
-                lines.append(f"{protected} {var['name']} = {var['value']}")
+            for e in entries:
+                flag = "🔒" if e.get("sensitive") else "  "
+                lines.append(f"{flag} {e['name']} = {e.get('display', '')}")
 
-            list_content: List[ToolResultContent] = [{"text": "\n".join(lines)}]
+            list_content: List[ToolResultContent] = [
+                {"text": "\n".join(lines) if lines else "(no tenant variables set)"}
+            ]
 
             # Build environment UI data for specialized rendering
             env_data = {
                 "variables": [
-                    {"name": var["name"], "value": var["value"], "protected": var["protected"]}
-                    for var in env_vars
+                    {
+                        "name": e["name"],
+                        "value": e.get("display", ""),
+                        "protected": False,
+                        "sensitive": bool(e.get("sensitive")),
+                        "updated_at": e.get("updated_at"),
+                    }
+                    for e in entries
                 ],
-                "count": len(env_vars),
+                "count": len(entries),
                 "action": "list",
             }
 
@@ -514,10 +501,10 @@ def environment(
                 console.print(format_error_message("name parameter is required"))
                 raise ValueError("name parameter is required for get action")
 
-            value = os.getenv(name)
+            meta = _tenant_env_metadata(name) if _tenant_env_metadata is not None else None
 
-            if value is None:
-                error_msg = f"Environment variable {name} not found"
+            if meta is None:
+                error_msg = f"Environment variable {name} not found for this user"
                 console.print(format_error_message(error_msg))
                 return {
                     "toolUseId": tool_use_id,
@@ -525,9 +512,11 @@ def environment(
                     "content": [{"text": error_msg}],
                 }
 
-            masked = tool_input.get("masked", env_vars_masked_default)
-            safe_value = value if value is not None else ""
-            display_value = mask_sensitive_value(name, safe_value) if masked else safe_value
+            sensitive = bool(meta.get("sensitive"))
+            # ``display`` is model-safe: the masked sentinel for sensitive vars,
+            # plaintext for non-sensitive ones. The tool NEVER surfaces a
+            # sensitive plaintext to the model.
+            display_value = str(meta.get("display", ""))
 
             # Show operation preview
             console.print(format_operation_preview(action="get", name=name, value=display_value))
@@ -539,37 +528,47 @@ def environment(
 
             # Add variable details
             table.add_row("Name", name)
-            table.add_row("Type", "Protected" if name in PROTECTED_VARS else "Standard")
+            table.add_row("Type", "Sensitive" if sensitive else "Standard")
             table.add_row("Value", display_value)
+            if meta.get("updated_at"):
+                table.add_row("Updated", str(meta.get("updated_at")))
+            if meta.get("decrypt_error"):
+                table.add_row("Status", "[red]⚠️ stored value failed to decrypt[/red]")
 
-            # Add value properties
-            if value is not None:
-                value_str = str(value)
-                table.add_row("Length", str(len(value_str)))
-                table.add_row("Contains Spaces", "Yes" if " " in value_str else "No")
-                table.add_row("Multiline", "Yes" if "\n" in value_str else "No")
+            # Value properties only for non-sensitive values; for sensitive vars
+            # even the length leaks entropy, so we never compute it here.
+            if not sensitive:
+                table.add_row("Length", str(len(display_value)))
+                table.add_row("Contains Spaces", "Yes" if " " in display_value else "No")
+                table.add_row("Multiline", "Yes" if "\n" in display_value else "No")
 
             # Create info panel
             panel = Panel(
                 table,
                 title=(
-                    f"[bold {'yellow' if name in PROTECTED_VARS else 'blue'}]🔍 "
-                    f"Environment Variable Details[/bold {'yellow' if name in PROTECTED_VARS else 'blue'}]"
+                    f"[bold {'yellow' if sensitive else 'blue'}]🔍 "
+                    f"Environment Variable Details[/bold {'yellow' if sensitive else 'blue'}]"
                 ),
-                border_style="yellow" if name in PROTECTED_VARS else "blue",
+                border_style="yellow" if sensitive else "blue",
                 box=box.ROUNDED,
             )
             console.print(panel)
 
             # Show success message
             show_operation_result(console, True, f"Successfully retrieved {name}")
-            # Create a return object with properly cast types
-            final_display_value = display_value if masked else safe_value
-            get_content: List[ToolResultContent] = [{"text": f"{name} = {final_display_value}"}]
+            get_content: List[ToolResultContent] = [{"text": f"{name} = {display_value}"}]
 
             # Build environment UI data for specialized rendering
             env_data = {
-                "variables": [{"name": name, "value": final_display_value, "protected": name in PROTECTED_VARS}],
+                "variables": [
+                    {
+                        "name": name,
+                        "value": display_value,
+                        "protected": False,
+                        "sensitive": sensitive,
+                        "updated_at": meta.get("updated_at"),
+                    }
+                ],
                 "count": 1,
                 "action": "get",
             }
@@ -587,8 +586,9 @@ def environment(
                 console.print(format_error_message(error_msg))
                 raise ValueError(error_msg)
 
-            # Check protected status first, regardless of confirmation mode
-            if name in PROTECTED_VARS:
+            # Check protected status first, regardless of confirmation mode.
+            # Uses the full tenant-protected set (infra/app secrets, model keys).
+            if _is_protected(name):
                 error_msg = f"⚠️ Cannot modify protected variable: {name}"
                 error_details = "\nProtected variables ensure system stability and security."
                 console.print(format_error_message(f"{error_msg}{error_details}"))
@@ -598,18 +598,23 @@ def environment(
                     "content": [{"text": f"Cannot modify protected variable: {name}"}],
                 }
 
-            # Show operation preview for dangerous actions
-            if needs_confirmation or True:  # Always show preview regardless of confirmation mode
-                console.print(format_operation_preview(action="set", name=name, value=value))
+            sensitive = _is_sensitive(name)
+            # Never echo a sensitive plaintext to the console/model, even on the
+            # way IN. The operator already knows the value they typed.
+            preview_value = MASKED_SENTINEL if sensitive else str(value)
 
-            # Show current vs new value comparison if exists
-            current_value = os.getenv(name)
-            if current_value is not None:
+            # Show operation preview (always)
+            console.print(format_operation_preview(action="set", name=name, value=preview_value))
+
+            # Show current vs new value comparison if the var already exists,
+            # sourced from the tenant overlay (current value masked if sensitive).
+            current_meta = _tenant_env_metadata(name) if _tenant_env_metadata is not None else None
+            if current_meta is not None:
                 table = Table(show_header=True)
                 table.add_column("State", style="cyan")
                 table.add_column("Value", style="white")
-                table.add_row("Current", current_value)
-                table.add_row("New", value)
+                table.add_row("Current", str(current_meta.get("display", "")))
+                table.add_row("New", preview_value)
                 console.print(
                     Panel(
                         table,
@@ -633,8 +638,20 @@ def environment(
                         "content": [{"text": f"Operation cancelled by user, reason: {confirm}"}],
                     }
 
-            # Set the variable
-            os.environ[name] = str(value)
+            # Persist to the CURRENT tenant's store + request overlay. The store
+            # validates the name, encrypts sensitive values at rest, and requires
+            # an active tenant context.
+            try:
+                meta = _tenant_env_set(name, str(value))
+            except (ValueError, RuntimeError) as exc:
+                console.print(format_error_message(str(exc)))
+                return {
+                    "toolUseId": tool_use_id,
+                    "status": "error",
+                    "content": [{"text": str(exc)}],
+                }
+
+            safe_display = str(meta.get("display", preview_value))
 
             # Show success message
             show_operation_result(console, True, f"Successfully set {name}")
@@ -642,7 +659,8 @@ def environment(
             success_table.add_column("Field", style="cyan")
             success_table.add_column("Value", style="green")
             success_table.add_row("Variable", name)
-            success_table.add_row("New Value", value)
+            success_table.add_row("New Value", safe_display)
+            success_table.add_row("Sensitive", "Yes" if sensitive else "No")
             success_table.add_row("Operation", "Set")
             success_table.add_row("Status", "✅ Complete")
 
@@ -655,8 +673,8 @@ def environment(
                 )
             )
 
-            # Format content for return
-            set_content: List[ToolResultContent] = [{"text": f"Set {name} = {value}"}]
+            # Format content for return (model-safe: sentinel for sensitive)
+            set_content: List[ToolResultContent] = [{"text": f"Set {name} = {safe_display}"}]
             return {
                 "toolUseId": tool_use_id,
                 "status": "success",
@@ -666,18 +684,26 @@ def environment(
             if not name:
                 raise ValueError("name parameter is required for validate action")
 
-            value = os.getenv(name)
+            meta = _tenant_env_metadata(name) if _tenant_env_metadata is not None else None
 
-            if value is None:
-                error_content: List[ToolResultContent] = [{"text": f"Environment variable {name} not found"}]
+            if meta is None:
+                error_content: List[ToolResultContent] = [
+                    {"text": f"Environment variable {name} not found for this user"}
+                ]
                 return {
                     "toolUseId": tool_use_id,
                     "status": "error",
                     "content": error_content,
                 }
 
-            # Add validation logic here based on variable name patterns
-            # For example, validate URL format, numeric values, etc.
+            if meta.get("decrypt_error"):
+                return {
+                    "toolUseId": tool_use_id,
+                    "status": "error",
+                    "content": [
+                        {"text": f"Environment variable {name} is set but its stored value failed to decrypt"}
+                    ],
+                }
 
             # Format content for return
             validate_content: List[ToolResultContent] = [{"text": f"Environment variable {name} is valid"}]
@@ -694,7 +720,7 @@ def environment(
                 raise ValueError(error_msg)
 
             # Check protected status first
-            if name in PROTECTED_VARS:
+            if _is_protected(name):
                 error_msg = (
                     f"⚠️ Cannot delete protected variable: {name}\n"
                     "Protected variables ensure system stability and security."
@@ -706,8 +732,9 @@ def environment(
                     "content": [{"text": f"Cannot delete protected variable: {name}"}],
                 }
 
-            # Check if variable exists
-            if name not in os.environ:
+            # Check if variable exists for THIS tenant
+            existing_meta = _tenant_env_metadata(name) if _tenant_env_metadata is not None else None
+            if existing_meta is None:
                 error_msg = f"Environment variable not found: {name}"
                 console.print(format_error_message(error_msg))
                 return {
@@ -716,10 +743,13 @@ def environment(
                     "content": [{"text": error_msg}],
                 }
 
+            # Model-/log-safe rendering of the current value (sentinel if sensitive)
+            current_display = str(existing_meta.get("display", ""))
+
             # Show detailed preview for confirmation
             if needs_confirmation:
                 # Show operation preview
-                console.print(format_operation_preview(action="delete", name=name, value=os.environ[name]))
+                console.print(format_operation_preview(action="delete", name=name, value=current_display))
 
                 # Show warning message
                 warning_table = Table(show_header=False, box=box.SIMPLE)
@@ -727,7 +757,7 @@ def environment(
                 warning_table.add_column("Details", style="white")
                 warning_table.add_row("Action", "🗑️ Delete Environment Variable")
                 warning_table.add_row("Variable", name)
-                warning_table.add_row("Current Value", os.environ[name])
+                warning_table.add_row("Current Value", current_display)
                 warning_table.add_row("Warning", "This action cannot be undone")
 
                 console.print(
@@ -752,17 +782,24 @@ def environment(
                         "content": [{"text": f"Operation cancelled by user, reason: {confirm}"}],
                     }
 
-            # Delete the variable
-            value = os.environ[name]
-            del os.environ[name]
+            # Delete from the CURRENT tenant's store + request overlay.
+            try:
+                _tenant_env_delete(name)
+            except (ValueError, RuntimeError) as exc:
+                console.print(format_error_message(str(exc)))
+                return {
+                    "toolUseId": tool_use_id,
+                    "status": "error",
+                    "content": [{"text": str(exc)}],
+                }
 
             # Show success message
-            show_operation_result(console, True, f"Successfully retrieved {name}")
+            show_operation_result(console, True, f"Successfully deleted {name}")
             success_table = Table(show_header=False)
             success_table.add_column("Field", style="cyan")
             success_table.add_column("Value", style="green")
             success_table.add_row("Variable", name)
-            success_table.add_row("Previous Value", value)
+            success_table.add_row("Previous Value", current_display)
             success_table.add_row("Operation", "Delete")
             success_table.add_row("Status", "✅ Complete")
 

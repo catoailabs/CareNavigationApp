@@ -1,0 +1,665 @@
+"""Multi-tenant environment store with a request-scoped overlay.
+
+Why this module exists
+----------------------
+``os.environ`` is a single process-global namespace shared by every
+concurrently-served tenant. Writing tenant data into it (as the legacy
+``server/environment_store.py`` did) leaks one tenant's secrets to every
+in-flight request. This module replaces that unsafe path with three scopes:
+
+* **Process env** (``os.environ``) – deploy config only (model keys, PATH,
+  Fernet/OAuth-app/Firebase secrets, ``BYPASS_TOOL_CONSENT``). Read-only to
+  tenants; never written with tenant data.
+* **Tenant env** – per-uid variables (including the user's Google credentials)
+  persisted in Firestore at ``tenant_environments/{uid}/vars/{NAME}`` (one doc
+  per variable, so a tenant can store effectively unlimited vars without
+  hitting the 1 MiB per-document cap). Sensitive values are Fernet-encrypted
+  at rest.
+* **Request overlay** – the active tenant's decrypted env for THIS request,
+  held in a ``contextvars.ContextVar`` bound to the request's async task. The
+  ``environment`` tool and ``use_google`` read it; concurrent users never share
+  state because asyncio copies context per task.
+
+Lookup order for a value: **request overlay (tenant) -> os.environ (read-only)
+-> not found.**
+
+Local dev: when ``FIREBASE_AUTH_DISABLED=true`` the store is backed by the
+existing JSON file (``data/agent_environment.json``) keyed to the single dev
+uid, so the local single-user flow keeps working without Firestore.
+
+Configuration (env vars):
+  GOOGLE_TOKEN_ENCRYPTION_KEY    – Fernet key (reused from server.google_credentials)
+  TENANT_ENV_COLLECTION          – root collection (default: "tenant_environments")
+  TENANT_PROTECTED_EXTRA         – comma-separated extra protected names
+  FIREBASE_AUTH_DISABLED         – "true" routes the store to the dev JSON fallback
+  DEV_FALLBACK_UID               – uid used by the dev fallback (default: "dev-user")
+"""
+
+from __future__ import annotations
+
+import base64
+import contextvars
+import logging
+import os
+import re
+import urllib.parse
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Names, sensitivity, and protection
+# ---------------------------------------------------------------------------
+
+# Same grammar the legacy store enforced.
+ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+# A name is "sensitive" (encrypted at rest, masked to the model) when it looks
+# like a credential. Substring match on the upper-cased name.
+_SENSITIVE_TOKENS = ("TOKEN", "SECRET", "KEY", "AUTH", "PASSWORD", "CREDENTIAL", "PRIVATE")
+
+# Process-level names a tenant may NEVER write or shadow. Superset of the legacy
+# environment_store.PROTECTED_VARS plus the backend's own infra/app secrets.
+# NOTE: ``GOOGLE_OAUTH_CREDENTIALS`` is intentionally NOT here — that is the
+# per-tenant Google credential blob this store is designed to hold. The
+# app-level OAuth client id/secret and the service-account path ARE protected.
+_BASE_PROCESS_PROTECTED = {
+    # OS / runtime
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "PYTHONPATH",
+    "STRANDS_HOME",
+    "BYPASS_TOOL_CONSENT",
+    # Encryption / identity / OAuth-app secrets (backend-owned)
+    "GOOGLE_TOKEN_ENCRYPTION_KEY",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_FIRESTORE_COLLECTION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "FIREBASE_SERVICE_ACCOUNT_JSON",
+    "FIREBASE_SERVICE_ACCOUNT_FILE",
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_AUTH_DISABLED",
+    "DEV_FALLBACK_UID",
+    "TENANT_ENV_COLLECTION",
+    "TENANT_PROTECTED_EXTRA",
+    # Model provider keys (process-global for now)
+    "XAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "PERPLEXITY_API_KEY",
+    # CORS / server config
+    "CORS_ALLOWED_ORIGINS",
+    "APP_ENV",
+}
+
+MASKED_SENTINEL = "[set · hidden]"
+
+DEFAULT_COLLECTION = "tenant_environments"
+
+
+def _extra_protected() -> set[str]:
+    raw = os.getenv("TENANT_PROTECTED_EXTRA", "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def process_protected_names() -> set[str]:
+    """Return the full set of names tenants cannot write or shadow."""
+    return _BASE_PROCESS_PROTECTED | _extra_protected()
+
+
+def is_process_protected(name: str) -> bool:
+    return name.strip() in process_protected_names()
+
+
+def is_sensitive_name(name: str) -> bool:
+    upper = name.upper()
+    return any(token in upper for token in _SENSITIVE_TOKENS)
+
+
+def _validate_name(name: str) -> str:
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("name is required")
+    if is_process_protected(clean):
+        raise ValueError(
+            f"Cannot modify protected process variable: {clean}. Protected names: "
+            + ", ".join(sorted(process_protected_names()))
+        )
+    if not ENV_VAR_NAME_RE.match(clean):
+        raise ValueError(
+            f"Invalid variable name: {clean}. Names must match ^[A-Z_][A-Z0-9_]*$"
+        )
+    return clean
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# Request-scoped overlay (task-local)
+# ---------------------------------------------------------------------------
+
+# The active tenant's uid for this request/task.
+current_tenant_uid: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "current_tenant_uid", default=None
+)
+
+# The active tenant's decrypted env for this request/task. Shape:
+#   { NAME: {"value": str | None, "sensitive": bool, "updated_at": str | None,
+#            "decrypt_error": bool} }
+# ``value`` is None only when a sensitive value failed to decrypt.
+current_tenant_env: "contextvars.ContextVar[Optional[dict[str, dict[str, Any]]]]" = (
+    contextvars.ContextVar("current_tenant_env", default=None)
+)
+
+
+class _ScopeToken:
+    """Bundles the two contextvar reset tokens for one request scope."""
+
+    __slots__ = ("_uid_token", "_env_token")
+
+    def __init__(self, uid_token: Any, env_token: Any) -> None:
+        self._uid_token = uid_token
+        self._env_token = env_token
+
+    def reset(self) -> None:
+        current_tenant_env.reset(self._env_token)
+        current_tenant_uid.reset(self._uid_token)
+
+
+# ---------------------------------------------------------------------------
+# Encryption (reuse the Fernet helper from server.google_credentials)
+# ---------------------------------------------------------------------------
+
+
+def _encrypt(plaintext: str) -> str:
+    from server.google_credentials import encrypt_secret
+
+    return encrypt_secret(plaintext)
+
+
+def _decrypt(ciphertext: str) -> str:
+    from server.google_credentials import decrypt_secret
+
+    return decrypt_secret(ciphertext)
+
+
+# ---------------------------------------------------------------------------
+# Dev fallback (JSON file, single dev uid) vs Firestore
+# ---------------------------------------------------------------------------
+
+
+def _use_dev_fallback() -> bool:
+    """True when Firebase auth is disabled (local dev): use the JSON file."""
+    from server.firebase_admin_support import auth_disabled
+
+    return auth_disabled()
+
+
+def _dev_uid() -> str:
+    return os.getenv("DEV_FALLBACK_UID", "dev-user")
+
+
+def _collection_name() -> str:
+    return os.getenv("TENANT_ENV_COLLECTION", DEFAULT_COLLECTION).strip() or DEFAULT_COLLECTION
+
+
+def _vars_collection(uid: str) -> Any:
+    from server.firebase_admin_support import get_firestore_client
+
+    return (
+        get_firestore_client()
+        .collection(_collection_name())
+        .document(uid)
+        .collection("vars")
+    )
+
+
+# -- Firestore-backed primitives -------------------------------------------------
+
+
+def _firestore_load(uid: str) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for snapshot in _vars_collection(uid).stream():
+        name = snapshot.id
+        data = snapshot.to_dict() or {}
+        sensitive = bool(data.get("sensitive"))
+        encrypted = bool(data.get("encrypted"))
+        raw = data.get("value", "")
+        value: Optional[str]
+        decrypt_error = False
+        if encrypted:
+            try:
+                value = _decrypt(str(raw))
+            except Exception as exc:  # noqa: BLE001 - rotated/invalid key
+                logger.warning("Failed to decrypt %s for uid=%s: %s", name, uid, exc)
+                value = None
+                decrypt_error = True
+        else:
+            value = str(raw)
+        out[name] = {
+            "value": value,
+            "sensitive": sensitive,
+            "updated_at": data.get("updated_at"),
+            "decrypt_error": decrypt_error,
+        }
+    return out
+
+
+def _firestore_set(uid: str, name: str, value: str, sensitive: bool) -> None:
+    payload: dict[str, Any] = {
+        "sensitive": sensitive,
+        "encrypted": sensitive,
+        "value": _encrypt(value) if sensitive else value,
+        "updated_at": _now_iso(),
+    }
+    doc = _vars_collection(uid).document(name)
+    if not doc.get().exists:
+        payload["created_at"] = payload["updated_at"]
+    doc.set(payload, merge=True)
+
+
+def _firestore_delete(uid: str, name: str) -> None:
+    _vars_collection(uid).document(name).delete()
+
+
+# -- Dev JSON-file primitives (no os.environ writes, no Firestore) ---------------
+
+
+def _dev_load(uid: str) -> dict[str, dict[str, Any]]:
+    """Load the dev tenant's vars from the JSON file.
+
+    The dev file is a flat ``{name: value}`` list (legacy schema); in dev there
+    is a single tenant so the whole file is that tenant's env. Values are stored
+    in plaintext locally (the file was already plaintext) — sensitivity is
+    derived from the name for masking, but no encryption is applied in dev.
+    """
+    from server.environment_store import get_environment_variables, load_environment_store
+
+    store = load_environment_store()
+    updated: dict[str, str] = {}
+    for item in store.get("variables", []):
+        if isinstance(item, dict) and item.get("name"):
+            updated[str(item["name"])] = str(item.get("updatedAt", ""))
+
+    out: dict[str, dict[str, Any]] = {}
+    for name, value in get_environment_variables().items():
+        out[name] = {
+            "value": value,
+            "sensitive": is_sensitive_name(name),
+            "updated_at": updated.get(name) or None,
+            "decrypt_error": False,
+        }
+    return out
+
+
+def _dev_set(uid: str, name: str, value: str, sensitive: bool) -> None:
+    """Persist to the dev JSON file WITHOUT touching os.environ."""
+    from server.environment_store import load_environment_store, save_environment_store
+
+    store = load_environment_store()
+    variables: list[dict[str, Any]] = list(store.get("variables", []))
+    now = _now_iso()
+    existing = next(
+        (item for item in variables if str(item.get("name", "")).strip() == name),
+        None,
+    )
+    if existing is not None:
+        existing["value"] = value
+        existing["updatedAt"] = now
+    else:
+        variables.append(
+            {"name": name, "value": value, "createdAt": now, "updatedAt": now}
+        )
+    store["variables"] = variables
+    save_environment_store(store)
+
+
+def _dev_delete(uid: str, name: str) -> None:
+    from server.environment_store import load_environment_store, save_environment_store
+
+    store = load_environment_store()
+    variables = [
+        item
+        for item in store.get("variables", [])
+        if str(item.get("name", "")).strip() != name
+    ]
+    store["variables"] = variables
+    save_environment_store(store)
+
+
+# -- Store dispatch --------------------------------------------------------------
+
+
+def _store_load(uid: str) -> dict[str, dict[str, Any]]:
+    if _use_dev_fallback():
+        return _dev_load(uid)
+    return _firestore_load(uid)
+
+
+def _store_set(uid: str, name: str, value: str, sensitive: bool) -> None:
+    if _use_dev_fallback():
+        _dev_set(uid, name, value, sensitive)
+    else:
+        _firestore_set(uid, name, value, sensitive)
+
+
+def _store_delete(uid: str, name: str) -> None:
+    if _use_dev_fallback():
+        _dev_delete(uid, name)
+    else:
+        _firestore_delete(uid, name)
+
+
+# ---------------------------------------------------------------------------
+# Overlay lifecycle
+# ---------------------------------------------------------------------------
+
+
+def load_tenant_env(uid: str) -> _ScopeToken:
+    """Load a uid's tenant env from the store and bind it to this task.
+
+    Returns a token; call ``token.reset()`` in a ``finally`` at request end so
+    no overlay leaks into the next request served on the same task.
+    """
+    overlay = _store_load(uid)
+    uid_token = current_tenant_uid.set(uid)
+    env_token = current_tenant_env.set(overlay)
+    return _ScopeToken(uid_token, env_token)
+
+
+def reset_tenant_env(token: _ScopeToken) -> None:
+    token.reset()
+
+
+def _current_uid() -> Optional[str]:
+    uid = current_tenant_uid.get()
+    if uid:
+        return uid
+    # Standalone/CLI use under dev mode: default to the dev uid so the tool
+    # still functions without an HTTP request having set the overlay.
+    if _use_dev_fallback():
+        return _dev_uid()
+    return None
+
+
+def _overlay() -> Optional[dict[str, dict[str, Any]]]:
+    return current_tenant_env.get()
+
+
+# ---------------------------------------------------------------------------
+# Overlay accessors used by tools and endpoints
+# ---------------------------------------------------------------------------
+
+
+def tenant_env_get(name: str) -> Optional[str]:
+    """Resolve a variable to PLAINTEXT for execution boundaries.
+
+    Order: request overlay (tenant) -> os.environ (read-only) -> None. This
+    returns real values and must NEVER be sent to the model for sensitive
+    vars — the ``environment`` tool masks separately. Used by ``use_google``
+    and the execution-boundary helpers.
+    """
+    clean = (name or "").strip()
+    if not clean:
+        return None
+    overlay = _overlay()
+    if overlay is not None and clean in overlay:
+        return overlay[clean].get("value")
+    return os.environ.get(clean)
+
+
+def tenant_env_metadata(name: str) -> Optional[dict[str, Any]]:
+    """Return display metadata for a tenant var, or None if absent.
+
+    Shape: {name, sensitive, updated_at, present, decrypt_error, display}.
+    ``display`` is the model-safe value: masked sentinel for sensitive vars,
+    plaintext for non-sensitive ones.
+    """
+    clean = (name or "").strip()
+    overlay = _overlay()
+    if overlay is None or clean not in overlay:
+        return None
+    entry = overlay[clean]
+    sensitive = bool(entry.get("sensitive"))
+    value = entry.get("value")
+    if sensitive or entry.get("decrypt_error"):
+        display = MASKED_SENTINEL
+    else:
+        display = value if value is not None else ""
+    return {
+        "name": clean,
+        "sensitive": sensitive,
+        "updated_at": entry.get("updated_at"),
+        "present": True,
+        "decrypt_error": bool(entry.get("decrypt_error")),
+        "display": display,
+    }
+
+
+def tenant_env_list() -> list[dict[str, Any]]:
+    """Return model-safe metadata for every tenant var in the overlay."""
+    overlay = _overlay()
+    if not overlay:
+        return []
+    out: list[dict[str, Any]] = []
+    for name in sorted(overlay):
+        meta = tenant_env_metadata(name)
+        if meta is not None:
+            out.append(meta)
+    return out
+
+
+def tenant_env_all() -> dict[str, str]:
+    """Return {NAME: plaintext} for every tenant var (decrypted).
+
+    For execution-boundary injection into child processes. Excludes
+    ``os.environ`` (process secrets stay in the process) and any var that
+    failed to decrypt.
+    """
+    overlay = _overlay()
+    if not overlay:
+        return {}
+    out: dict[str, str] = {}
+    for name, entry in overlay.items():
+        value = entry.get("value")
+        if value is not None:
+            out[name] = str(value)
+    return out
+
+
+def tenant_env_set(name: str, value: str) -> dict[str, Any]:
+    """Validate, persist, and update the overlay for the current tenant.
+
+    Returns the new metadata. Raises ValueError for protected/invalid names
+    and RuntimeError when no tenant context is bound.
+    """
+    clean = _validate_name(name)
+    if value is None:
+        raise ValueError("value is required")
+    uid = _current_uid()
+    if not uid:
+        raise RuntimeError("No tenant context: cannot set a variable outside a request.")
+    sensitive = is_sensitive_name(clean)
+    _store_set(uid, clean, str(value), sensitive)
+
+    overlay = _overlay()
+    if overlay is None:
+        overlay = {}
+        current_tenant_env.set(overlay)
+    overlay[clean] = {
+        "value": str(value),
+        "sensitive": sensitive,
+        "updated_at": _now_iso(),
+        "decrypt_error": False,
+    }
+    meta = tenant_env_metadata(clean)
+    assert meta is not None
+    return meta
+
+
+def tenant_env_delete(name: str) -> None:
+    """Remove a variable from the store and the overlay for the current tenant."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("name is required")
+    if is_process_protected(clean):
+        raise ValueError(f"Cannot delete protected process variable: {clean}")
+    uid = _current_uid()
+    if not uid:
+        raise RuntimeError("No tenant context: cannot delete a variable outside a request.")
+    _store_delete(uid, clean)
+    overlay = _overlay()
+    if overlay is not None:
+        overlay.pop(clean, None)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint helpers (operate on a uid directly, no overlay required)
+# ---------------------------------------------------------------------------
+
+
+def tenant_env_list_for_uid(uid: str) -> list[dict[str, Any]]:
+    """Masked listing for the settings UI (does not require an overlay)."""
+    overlay = _store_load(uid)
+    out: list[dict[str, Any]] = []
+    for name in sorted(overlay):
+        entry = overlay[name]
+        sensitive = bool(entry.get("sensitive"))
+        value = entry.get("value")
+        display = MASKED_SENTINEL if (sensitive or entry.get("decrypt_error")) else (value or "")
+        out.append(
+            {
+                "name": name,
+                "value": display,
+                "sensitive": sensitive,
+                "protected": is_process_protected(name),
+                "updated_at": entry.get("updated_at"),
+            }
+        )
+    return out
+
+
+def tenant_env_set_for_uid(uid: str, name: str, value: str) -> None:
+    """Persist a variable for a uid (settings UI POST)."""
+    clean = _validate_name(name)
+    if value is None:
+        raise ValueError("value is required")
+    _store_set(uid, clean, str(value), is_sensitive_name(clean))
+
+
+def tenant_env_delete_for_uid(uid: str, name: str) -> None:
+    """Delete a variable for a uid (settings UI DELETE)."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("name is required")
+    if is_process_protected(clean):
+        raise ValueError(f"Cannot delete protected process variable: {clean}")
+    _store_delete(uid, clean)
+
+
+def tenant_env_metadata_for_uid(uid: str, name: str) -> Optional[dict[str, Any]]:
+    """Return presence/metadata for one var for a uid (e.g. Google status)."""
+    overlay = _store_load(uid)
+    clean = (name or "").strip()
+    if clean not in overlay:
+        return None
+    entry = overlay[clean]
+    return {
+        "name": clean,
+        "sensitive": bool(entry.get("sensitive")),
+        "updated_at": entry.get("updated_at"),
+        "present": True,
+        "decrypt_error": bool(entry.get("decrypt_error")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Execution-boundary helpers ("use without divulging")
+# ---------------------------------------------------------------------------
+
+_ENV_TOKEN_RE = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)\}")
+
+
+def resolve_env_tokens(text: str) -> str:
+    """Expand ``${env:NAME}`` tokens from the tenant overlay / os.environ.
+
+    Used by the tool-arg substitution interceptor just before a tool runs.
+    Unknown names are left intact so the failure is visible rather than silent.
+    """
+    if not isinstance(text, str) or "${env:" not in text:
+        return text
+
+    def _sub(match: "re.Match[str]") -> str:
+        name = match.group(1)
+        value = tenant_env_get(name)
+        return value if value is not None else match.group(0)
+
+    return _ENV_TOKEN_RE.sub(_sub, text)
+
+
+def _transformed_forms(value: str) -> list[str]:
+    """Return encoded forms of a secret value that redaction should also catch."""
+    forms: list[str] = []
+    raw = value.encode("utf-8")
+    try:
+        forms.append(base64.b64encode(raw).decode("ascii"))
+        forms.append(base64.b64encode(raw).decode("ascii").rstrip("="))
+        forms.append(base64.urlsafe_b64encode(raw).decode("ascii"))
+        forms.append(base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        forms.append(raw.hex())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        forms.append(urllib.parse.quote(value, safe=""))
+    except Exception:  # noqa: BLE001
+        pass
+    return [f for f in forms if f and f != value]
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any known sensitive tenant value (and common encoded forms) with
+    ``[redacted]``. A backstop, not a guarantee (see plan's honest limitation).
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    overlay = _overlay()
+    if not overlay:
+        return text
+    redacted = text
+    # Longest values first so substrings of larger secrets are handled first.
+    secrets: list[str] = []
+    for entry in overlay.values():
+        if not entry.get("sensitive"):
+            continue
+        value = entry.get("value")
+        if value and isinstance(value, str) and len(value) >= 4:
+            secrets.append(value)
+    for value in sorted(secrets, key=len, reverse=True):
+        if value in redacted:
+            redacted = redacted.replace(value, "[redacted]")
+        for form in _transformed_forms(value):
+            if len(form) >= 4 and form in redacted:
+                redacted = redacted.replace(form, "[redacted]")
+    return redacted
+
+
+def child_process_env(base: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Build an env dict for a spawned child: base (or os.environ) + tenant vars.
+
+    The parent ``os.environ`` is never mutated — tenant values live only in the
+    returned dict, which is handed to the child process.
+    """
+    env = dict(base if base is not None else os.environ)
+    env.update(tenant_env_all())
+    return env

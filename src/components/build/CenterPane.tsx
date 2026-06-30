@@ -1,6 +1,6 @@
 import { useMemo, useRef, useEffect, type ReactNode } from 'react'
 import { type FileUIPart } from 'ai'
-import { ArrowTrendingUpIcon, BuildingOffice2Icon, UserIcon } from '@heroicons/react/24/outline'
+import { UserIcon } from '@heroicons/react/24/outline'
 import { SparklesIcon } from '@heroicons/react/24/outline'
 import { ProviderThreadStateProvider } from '@/copilot/provider/ProviderThreadState'
 import { PROVIDER_AGENT_ID } from '@/copilot/provider/constants'
@@ -14,6 +14,7 @@ import { ProviderPromptInput } from '@/components/provider/ProviderPromptInput'
 import { useBuildStore } from '@/stores/buildStore'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
+import { authHeaders } from '@/lib/api'
 import { TabAttachments } from '@/components/ai-elements/TabAttachment'
 import {
   Attachment,
@@ -135,6 +136,7 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
   const { messages, sendMessage, status, stop } = useChat<ProviderChatMessage>({
     transport: new DefaultChatTransport({
       api: '/api/chat',
+      headers: authHeaders,
       body: sessionId ? { sessionId } : undefined,
     }),
   })
@@ -146,15 +148,20 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
     void sendMessage({ text })
   }
 
-  const handleComposerSubmit = ({ displayText, files, promptText, tabAttachments }: ProviderComposerSubmitPayload) => {
-    void sendMessage({
-      text: promptText || (files.length > 0 || tabAttachments.length > 0 ? 'Attached context' : ''),
-      files: files.length > 0 ? files : undefined,
-      metadata: {
-        displayText,
-        tabAttachments,
+  const handleComposerSubmit = ({ displayText, files, promptText, tabAttachments, mentions }: ProviderComposerSubmitPayload) => {
+    void sendMessage(
+      {
+        text: promptText || (files.length > 0 || tabAttachments.length > 0 ? 'Attached context' : ''),
+        files: files.length > 0 ? files : undefined,
+        metadata: {
+          displayText,
+          tabAttachments,
+        },
       },
-    })
+      {
+        body: mentions && mentions.length > 0 ? { mentions } : undefined,
+      },
+    )
   }
 
   // Record first user prompt as session title
@@ -185,6 +192,7 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
       messages={messages}
       sendMessage={sendUserMessage}
       isRunning={isStreaming}
+      onStop={stop}
     >
       <div className="flex h-full flex-col">
         <div
@@ -271,30 +279,20 @@ export function CenterPane() {
   return (
     <div className="relative flex flex-1 min-w-0 flex-col">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.14),transparent_58%)]" />
-      <div className="relative flex h-full min-h-0 flex-col">
-        <div className="flex items-center justify-between gap-4 border-b border-surface-800/90 bg-surface-900/55 px-6 py-4 backdrop-blur-xl">
-          <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-[0.24em] text-white/35">Provider intelligence</div>
-            <h2 className="mt-2 truncate text-xl font-light text-white">
-              {activeSession?.title ?? 'New chat'}
-            </h2>
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div className="flex items-center justify-between gap-4 border-b border-surface-800/90 bg-surface-900/55 px-6 py-4 backdrop-blur-xl">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.24em] text-white/35">Provider intelligence</div>
+              <h2 className="mt-2 truncate text-xl font-light text-white">
+                {activeSession?.title ?? 'New chat'}
+              </h2>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-white/42">
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5">
-              <BuildingOffice2Icon className="h-4 w-4 text-indigo-200" />
-              NPPES + cited enrichment
-            </span>
-            <span className="inline-flex items-center gap-2 rounded-full border border-indigo-300/20 bg-indigo-400/10 px-3 py-1.5 text-indigo-100">
-              <ArrowTrendingUpIcon className="h-4 w-4" />
-              Deep research ready
-            </span>
-          </div>
-        </div>
 
-        <div className="relative flex-1 min-h-0 overflow-hidden">
-          <ActiveChat sessionId={activeSessionId} />
+          <div className="relative flex-1 min-h-0 overflow-hidden">
+            <ActiveChat sessionId={activeSessionId} />
+          </div>
         </div>
-      </div>
     </div>
   )
 }

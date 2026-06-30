@@ -12,20 +12,31 @@
  * - Preview Panel auto-opens on dev server detection
  */
 
-import { useEffect, useState, useRef, useMemo, memo, useCallback } from 'react'
+import { useEffect, useState, useRef, useMemo, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useBuildStore } from '@/stores/buildStore'
 import { LeftRail } from './LeftRail'
 import { CenterPane } from './CenterPane'
+import { SettingsModal } from '@/components/settings/SettingsModal'
+import { useAuthStore } from '@/stores/authStore'
+import { getAuthClient } from '@/lib/firebase'
+import { signOut } from 'firebase/auth'
 import { cn } from '@/utils/cn'
-import { 
-  XMarkIcon,
-  Squares2X2Icon,
-  PlayIcon,
-  StopIcon,
+import {
+  UserIcon,
+  Cog6ToothIcon,
+  ArrowRightOnRectangleIcon,
+  LifebuoyIcon,
 } from '@heroicons/react/24/outline'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 const EASE = [0.16, 1, 0.3, 1] as const
 
@@ -290,187 +301,123 @@ function SidebarLeftIcon({ className }: { className?: string }) {
 
 interface HeaderProps {
   leftOpen: boolean
-  previewOpen: boolean
-  isPreviewRunning: boolean
   onToggleLeft: () => void
-  onTogglePreview: () => void
-  onStopPreview: () => void
 }
 
 const Header = memo(function Header({
   leftOpen,
-  previewOpen,
-  isPreviewRunning,
   onToggleLeft,
-  onTogglePreview,
-  onStopPreview,
 }: HeaderProps) {
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const user = useAuthStore((s) => s.user)
+
+  const handleLogout = () => {
+    const auth = getAuthClient()
+    if (auth) void signOut(auth)
+  }
+
   return (
-    <header className="relative z-20 flex-shrink-0 h-14 px-4 flex items-center justify-between border-b border-surface-800 bg-surface-900/90 backdrop-blur">
-      {/* Left Section */}
-      <div className="flex items-center gap-4">
-        {/* Logo */}
-        <div className="relative group">
-          <div 
-            className="absolute -inset-2 rounded-xl blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-500"
-            style={{ background: `linear-gradient(90deg, ${PURPLE.deep}40, ${PURPLE.rich}40)` }}
-          />
-          <img src="/Logo.png" alt="Ron" className="relative h-7 w-auto" />
-        </div>
-        
-        {/* Divider */}
-        <div className="h-5 w-px bg-surface-800" />
-        
-        {/* Left rail toggle */}
-        <button 
-          onClick={onToggleLeft}
-          className={cn(
-            "p-2 rounded-lg transition-all duration-200 group",
-            leftOpen 
-              ? "text-ink-inverse bg-surface-800" 
-              : "text-ink-inverse-muted hover:text-ink-inverse hover:bg-surface-800/50"
-          )}
-          title="Toggle Chats"
-        >
-          <SidebarLeftIcon className="group-hover:scale-105 transition-transform" />
-        </button>
-      </div>
-
-      {/* Center - Build Mode Indicator */}
-      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
-        <div 
-          className="flex items-center gap-2 px-4 py-1.5 rounded-full border"
-          style={{
-            background: 'rgba(76, 29, 149, 0.1)',
-            borderColor: 'rgba(76, 29, 149, 0.3)'
-          }}
-        >
-          <div className="relative">
-            <div className="w-2 h-2 rounded-full bg-[#6366F1]" />
-            <div className="absolute inset-0 w-2 h-2 rounded-full bg-[#6366F1] animate-ping opacity-30" />
+    <>
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <header className="relative z-20 flex-shrink-0 h-14 px-4 flex items-center justify-between border-b border-surface-800 bg-surface-900/90 backdrop-blur">
+        {/* Left Section */}
+        <div className="flex items-center gap-4">
+          {/* Logo */}
+          <div className="relative group">
+            <div 
+              className="absolute -inset-2 rounded-xl blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-500"
+              style={{ background: `linear-gradient(90deg, ${PURPLE.deep}40, ${PURPLE.rich}40)` }}
+            />
+            <img src="/Logo.png" alt="Ron" className="relative h-7 w-auto" />
           </div>
-          <span className="text-xs font-medium tracking-wide text-ink-inverse-secondary uppercase">Build Mode</span>
-        </div>
-      </div>
-
-      {/* Right Section */}
-      <div className="flex items-center gap-3">
-        {/* Preview Toggle */}
-        {isPreviewRunning ? (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onTogglePreview}
-              className={cn(
-                "relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 overflow-hidden",
-                previewOpen
-                  ? "text-white shadow-lg"
-                  : "text-ink-inverse-secondary hover:text-ink-inverse border border-surface-700"
-              )}
-              style={{
-                background: previewOpen 
-                  ? `linear-gradient(135deg, ${PURPLE.deep}, ${PURPLE.rich})`
-                  : 'rgba(10, 10, 10, 0.6)',
-                boxShadow: previewOpen ? `0 4px 20px ${PURPLE.glow}` : undefined
-              }}
-            >
-              <div className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-              </div>
-              <Squares2X2Icon className="w-4 h-4" />
-              <span>Preview</span>
-            </button>
-            <button
-              onClick={onStopPreview}
-              className="p-2 rounded-xl bg-surface-800 text-ink-inverse-muted hover:text-red-400 hover:bg-red-500/10 border border-surface-700 transition-colors"
-              title="Stop preview server"
-            >
-              <StopIcon className="w-4 h-4" />
-            </button>
-          </div>
-        ) : (
-          <button
-            disabled
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-surface-800/50 text-ink-inverse-muted border border-surface-800 cursor-not-allowed"
+          
+          {/* Divider */}
+          <div className="h-5 w-px bg-surface-800" />
+          
+          {/* Left rail toggle */}
+          <button 
+            onClick={onToggleLeft}
+            className={cn(
+              "p-2 rounded-lg transition-all duration-200 group",
+              leftOpen 
+                ? "text-ink-inverse bg-surface-800" 
+                : "text-ink-inverse-muted hover:text-ink-inverse hover:bg-surface-800/50"
+            )}
+            title="Toggle Chats"
           >
-            <Squares2X2Icon className="w-4 h-4" />
-            <span>Preview</span>
+            <SidebarLeftIcon className="group-hover:scale-105 transition-transform" />
           </button>
-        )}
-      </div>
-    </header>
-  )
-})
+        </div>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Preview Panel - Browser preview for running dev server
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface PreviewPanelProps {
-  url: string
-  onClose: () => void
-}
-
-const PreviewPanel = memo(function PreviewPanel({ url, onClose }: PreviewPanelProps) {
-  return (
-    <motion.div
-      initial={{ x: "100%", opacity: 0.5 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: "100%", opacity: 0 }}
-      transition={{ duration: 0.35, ease: EASE }}
-      className="absolute inset-0 z-30 bg-surface-950 border-l border-surface-800 shadow-2xl shadow-black/50 flex flex-col"
-    >
-      {/* Preview Header */}
-      <div className="flex-none flex items-center justify-between px-4 py-3 border-b border-surface-800 bg-surface-900/60 backdrop-blur">
-        <div className="flex items-center gap-3">
+        {/* Center - Build Mode Indicator */}
+        <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
           <div 
-            className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: 'rgba(76, 29, 149, 0.2)' }}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-full border"
+            style={{
+              background: 'rgba(76, 29, 149, 0.1)',
+              borderColor: 'rgba(76, 29, 149, 0.3)'
+            }}
           >
-            <PlayIcon className="w-4 h-4 text-[#6366F1]" />
-          </div>
-          <div>
-            <h3 className="text-sm font-medium text-ink-inverse">Live Preview</h3>
-            <p className="text-xs text-ink-inverse-muted font-mono">{url}</p>
+            <div className="relative">
+              <div className="w-2 h-2 rounded-full bg-[#6366F1]" />
+              <div className="absolute inset-0 w-2 h-2 rounded-full bg-[#6366F1] animate-ping opacity-30" />
+            </div>
+            <span className="text-xs font-medium tracking-wide text-ink-inverse-secondary uppercase">Build Mode</span>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-2 rounded-lg hover:bg-surface-800 text-ink-inverse-muted hover:text-ink-inverse transition-colors"
-          aria-label="Close preview"
-        >
-          <XMarkIcon className="w-5 h-5" />
-        </button>
-      </div>
 
-      {/* Browser Frame */}
-      <div className="flex-1 bg-white">
-        <iframe
-          src={url}
-          className="w-full h-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          allow="accelerometer; camera; encrypted-media; geolocation; gyroscope; microphone; midi"
-        />
-      </div>
-    </motion.div>
+        {/* Right Section */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="p-2 rounded-xl text-ink-inverse-muted hover:text-ink-inverse hover:bg-surface-800 border border-transparent hover:border-surface-700 transition-all"
+            title="Settings"
+          >
+            <Cog6ToothIcon className="h-5 w-5" />
+          </button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-gradient-to-br from-[#3730A3] to-[#6366F1] text-white shadow-lg transition-transform hover:scale-105"
+                aria-label="Profile menu"
+              >
+                <UserIcon className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={8}
+              className="w-48 rounded-xl border border-white/[0.08] bg-[#11111d]/96 p-1.5 text-white shadow-[0_28px_120px_-48px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
+            >
+              <div className="px-3 py-2">
+                <p className="text-sm font-medium text-white">Account</p>
+                <p className="text-xs text-white/45">{user?.email ?? user?.displayName ?? 'Manage your workspace'}</p>
+              </div>
+              <DropdownMenuSeparator className="bg-white/[0.06]" />
+              <DropdownMenuItem className="rounded-lg px-3 py-2 text-white/82 focus:bg-white/[0.08] focus:text-white">
+                <UserIcon className="h-4 w-4" />
+                My Account
+              </DropdownMenuItem>
+              <DropdownMenuItem className="rounded-lg px-3 py-2 text-white/82 focus:bg-white/[0.08] focus:text-white">
+                <LifebuoyIcon className="h-4 w-4" />
+                Support
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-white/[0.06]" />
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="rounded-lg px-3 py-2 text-white/82 focus:bg-white/[0.08] focus:text-white"
+              >
+                <ArrowRightOnRectangleIcon className="h-4 w-4" />
+                Log Out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+    </>
   )
 })
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Dev Server Detection Hook
-// ─────────────────────────────────────────────────────────────────────────────
-
-function useDevServerDetection() {
-  const [isRunning, setIsRunning] = useState(false)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-
-  const stopPreview = useCallback(() => {
-    setIsRunning(false)
-    setPreviewUrl(null)
-  }, [])
-
-  return { isRunning, previewUrl, stopPreview }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Page Component
@@ -479,17 +426,6 @@ function useDevServerDetection() {
 export function BuildWorkbenchPage() {
   const { incrementNavigation, ensureActiveSession } = useBuildStore()
   const [leftOpen, setLeftOpen] = useState(true)
-  const [previewDismissed, setPreviewDismissed] = useState(false)
-  
-  // Dev server detection
-  const { isRunning: isPreviewRunning, previewUrl, stopPreview } = useDevServerDetection()
-  // Derive previewOpen from server state — no effect needed
-  const previewOpen = !previewDismissed && isPreviewRunning && Boolean(previewUrl)
-  const setPreviewOpen = (open: boolean) => {
-    if (!open) setPreviewDismissed(true)
-    else setPreviewDismissed(false)
-  }
-
 
   // Increment navigation counter on mount
   useEffect(() => {
@@ -509,11 +445,7 @@ export function BuildWorkbenchPage() {
       {/* Header / Toolbar */}
       <Header
         leftOpen={leftOpen}
-        previewOpen={previewOpen}
-        isPreviewRunning={isPreviewRunning}
         onToggleLeft={() => setLeftOpen(!leftOpen)}
-        onTogglePreview={() => setPreviewOpen(!previewOpen)}
-        onStopPreview={stopPreview}
       />
 
       {/* Main Content Layout */}
@@ -539,16 +471,6 @@ export function BuildWorkbenchPage() {
         {/* Center Pane (Chat) */}
         <div className="flex-1 flex min-w-0 relative">
           <CenterPane />
-
-          {/* Sliding Preview Panel - Auto-opens on dev commands */}
-          <AnimatePresence>
-            {previewOpen && isPreviewRunning && previewUrl && (
-              <PreviewPanel 
-                url={previewUrl}
-                onClose={() => setPreviewOpen(false)}
-              />
-            )}
-          </AnimatePresence>
         </div>
       </div>
     </div>

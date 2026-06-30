@@ -33,6 +33,7 @@ from strands_xai import xAIModel
 # function-name list to maintain anywhere.
 import tools.tool_catalog as _m_tool_catalog
 import tools.virtual_desktop.virtual_desktop_tool as _m_virtual_desktop
+import tools.browser.desktop_browser as _m_desktop_browser
 import strands_tools.devops.shell as _m_shell
 import strands_tools.devops.editor as _m_editor
 import strands_tools.devops.environment as _m_environment
@@ -41,7 +42,13 @@ import strands_tools.agent_orchestration.graph as _m_graph
 import strands_tools.agent_orchestration.use_agent as _m_use_agent
 import strands_tools.research.perplexity_search_api as _m_perplexity_search
 import strands_tools.research.perplexity_deep_research as _m_perplexity_deep
-from strands_tools.browser.local_chromium_browser import LocalChromiumBrowser
+from server.environment_store import apply_persisted_environment
+from server import tool_catalog_support
+from server import skills_support
+from server import firebase_admin_support
+from server import tenant_environment
+from server import tenant_env_hooks
+from server import google_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +94,7 @@ BASELINE_TOOL_MODULES = (
     _m_perplexity_search,
     _m_perplexity_deep,
     _m_virtual_desktop,
+    _m_desktop_browser,
 )
 
 
@@ -99,17 +107,18 @@ def _tools_in(module: Any) -> list[Any]:
     ]
 
 
-def build_baseline_tools() -> list[Any]:
-    """Collect all @tool callables across BASELINE_TOOL_MODULES and append a
-    fresh LocalChromiumBrowser session. A new browser instance is created on
-    every call so each session-scoped Agent owns its own Chromium session."""
+def build_baseline_tools(session_id: str | None = None) -> list[Any]:
+    """Collect all @tool callables across BASELINE_TOOL_MODULES. This includes
+    the ``browser`` tool (``tools.browser.desktop_browser``) that drives Chromium
+    on the agent's virtual desktop over CDP, so the agent and the streamed
+    desktop live-view share one visible browser. ``session_id`` is accepted for
+    call-site parity."""
     tools: list[Any] = []
     for module in BASELINE_TOOL_MODULES:
         tools.extend(_tools_in(module))
-    tools.append(LocalChromiumBrowser().browser)
     return tools
 DEFAULT_AGENT_ID = "provider-research-agent"
-DEFAULT_MODEL_ID = "grok-4.20-0309-reasoning"
+DEFAULT_MODEL_ID = "grok-4.3"
 SUPPORTED_DOCUMENT_FORMATS = {"pdf", "csv", "doc", "docx", "xls", "xlsx", "html", "txt", "md"}
 DOCUMENT_MEDIA_TYPE_TO_FORMAT = {
     "application/msword": "doc",
@@ -124,6 +133,12 @@ DOCUMENT_MEDIA_TYPE_TO_FORMAT = {
 }
 
 load_dotenv(ENV_PATH)
+apply_persisted_environment()
+
+# The use_google tool blocks on input() for mutative ops (e.g. gmail send)
+# unless consent is bypassed. In this web/server context there is no TTY, so a
+# prompt would hang the request. Default to bypass unless explicitly overridden.
+os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 
 SYSTEM_PROMPT = """You are a provider research assistant.
 
@@ -161,14 +176,17 @@ def build_agent(
     messages: list[dict[str, Any]] | None = None,
     conversation_manager: Any | None = None,
     retry_strategy: Any | None = None,
+    session_id: str | None = None,
+    system_prompt: str | None = None,
 ) -> Agent:
     validate_agent_configuration(model)
     kwargs: dict[str, Any] = {
         "model": model or build_model(),
-        "system_prompt": SYSTEM_PROMPT,
-        "tools": build_baseline_tools(),
+        "system_prompt": system_prompt or SYSTEM_PROMPT,
+        "tools": build_baseline_tools(session_id),
         "agent_id": os.getenv("STRANDS_AGENT_ID", DEFAULT_AGENT_ID),
         "retry_strategy": retry_strategy or ModelRetryStrategy(),
+        "hooks": [tenant_env_hooks.TenantEnvHookProvider()],
     }
     if messages is not None:
         kwargs["messages"] = messages
@@ -185,11 +203,15 @@ def _build_conversation_manager() -> SlidingWindowConversationManager:
 async def _create_agent_for_request(
     model: Model | None,
     messages: list[dict[str, Any]],
+    session_id: str | None = None,
+    system_prompt: str | None = None,
 ) -> Agent:
     return build_agent(
         model=model,
         messages=messages,
         conversation_manager=_build_conversation_manager(),
+        session_id=session_id,
+        system_prompt=system_prompt,
     )
 
 
@@ -446,6 +468,77 @@ def ui_messages_to_agent_input(messages: Any) -> list[dict[str, Any]]:
     return normalized_messages
 
 
+def _graph_data_part(tool_stream_event: Any) -> dict[str, Any] | None:
+    """Translate a Strands multi-agent Graph stream event into a ``data-graph``
+    UI-message part. Returns ``None`` for events the workflow UI ignores.
+
+    The graph tool yields raw ``MultiAgentStreamEvent`` dicts (and a custom
+    ``graph_topology`` envelope); the SDK wraps each in a ``ToolStreamEvent`` so
+    they surface here as ``tool_stream``. Each emitted part carries the owning
+    ``toolCallId`` so the client can key the live DAG to the right tool call.
+    Parts are emitted without an ``id`` so the SDK appends (rather than
+    replaces) them, preserving the event log the workflow replays.
+    """
+    if not isinstance(tool_stream_event, dict):
+        return None
+    tool_use = tool_stream_event.get("tool_use") or {}
+    tool_call_id = tool_use.get("toolUseId", "")
+    data = tool_stream_event.get("data")
+    if not tool_call_id or not isinstance(data, dict):
+        return None
+
+    event_type = data.get("type")
+    part: dict[str, Any] | None = None
+
+    if event_type == "graph_topology":
+        topology = data.get("topology") or {}
+        part = {
+            "kind": "topology",
+            "nodes": [
+                {"id": n.get("id"), "role": n.get("role"), "model": n.get("model_provider")}
+                for n in topology.get("nodes", [])
+                if isinstance(n, dict)
+            ],
+            "edges": [
+                {"from": e.get("from"), "to": e.get("to")}
+                for e in topology.get("edges", [])
+                if isinstance(e, dict)
+            ],
+            "entryPoints": list(topology.get("entry_points", [])),
+        }
+    elif event_type == "multiagent_node_start":
+        part = {
+            "kind": "node_start",
+            "nodeId": data.get("node_id"),
+            "nodeType": data.get("node_type"),
+        }
+    elif event_type == "multiagent_node_stop":
+        node_result = data.get("node_result")
+        status = getattr(getattr(node_result, "status", None), "value", None)
+        part = {
+            "kind": "node_stop",
+            "nodeId": data.get("node_id"),
+            "status": status,
+            "executionTime": getattr(node_result, "execution_time", None),
+        }
+    elif event_type == "multiagent_handoff":
+        part = {
+            "kind": "handoff",
+            "from": list(data.get("from_node_ids", [])),
+            "to": list(data.get("to_node_ids", [])),
+        }
+    elif event_type == "multiagent_node_stream":
+        inner = data.get("event")
+        delta = inner.get("data") if isinstance(inner, dict) else None
+        if isinstance(delta, str) and delta:
+            part = {"kind": "node_text", "nodeId": data.get("node_id"), "delta": delta}
+
+    if part is None:
+        return None
+    part["toolCallId"] = tool_call_id
+    return {"type": "data-graph", "data": part}
+
+
 async def strands_to_aisdk_stream(
     prompt: AgentInput,
     session_agent: Agent,
@@ -521,6 +614,12 @@ async def strands_to_aisdk_stream(
                 active_tools[tool_id]["input"] = tool_input
             continue
 
+        if event.get("type") == "tool_stream":
+            payload = _graph_data_part(event.get("tool_stream_event", {}))
+            if payload is not None:
+                yield f"data: {json.dumps(payload)}\n\n"
+            continue
+
         if event.get("type") == "tool_result" and isinstance(event.get("tool_result"), dict):
             tool_result = event["tool_result"]
             for payload in _tool_result_payloads(tool_result, active_tools):
@@ -557,6 +656,30 @@ async def strands_to_aisdk_stream(
     yield "data: [DONE]\n\n"
 
 
+async def stream_with_request_context(
+    prompt: AgentInput,
+    session_agent: Agent,
+    uid: str,
+    injected_google: Any | None,
+) -> AsyncIterator[str]:
+    """Bind the request-scoped tenant env + Google credentials, then proxy the stream.
+
+    Both contextvars are set inside this async generator (the same task that
+    drives ``stream_async``) so they propagate into tool execution, and are
+    reset when the stream completes or the client disconnects. The tenant
+    overlay scopes every ``environment`` tool read/write to ``uid`` so secrets
+    never bleed across concurrently served users.
+    """
+    tenant_token = tenant_environment.load_tenant_env(uid)
+    google_token = google_credentials.current_google_credentials.set(injected_google)
+    try:
+        async for chunk in strands_to_aisdk_stream(prompt, session_agent):
+            yield chunk
+    finally:
+        google_credentials.current_google_credentials.reset(google_token)
+        tenant_environment.reset_tenant_env(tenant_token)
+
+
 _DEV_CORS_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
 _PROD_ENV_NAMES = {"prod", "production"}
 
@@ -583,7 +706,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_build_cors_origins(),
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["content-type", "authorization", "x-session-id"],
     allow_credentials=False,
     expose_headers=["x-vercel-ai-ui-message-stream"],
@@ -591,8 +714,41 @@ app.add_middleware(
 )
 
 
+def _build_system_prompt_with_mentions(mentions: list[str] | None) -> str | None:
+    """Return a system prompt variant that lists referenced context.
+
+    Env-var values are never included; only the token reference is shown.
+    """
+    if not mentions:
+        return None
+    clean = [str(m).strip() for m in mentions if str(m).strip()]
+    if not clean:
+        return None
+
+    labels: list[str] = []
+    for token in clean:
+        if token.startswith("@env:"):
+            labels.append(f"{token[5:]} (env)")
+        elif token.startswith("@tool:"):
+            labels.append(f"{token[6:]} (tool)")
+        elif token.startswith("@connector:"):
+            labels.append(f"{token[11:]} (connector)")
+        elif token.startswith("@skill:"):
+            labels.append(f"{token[7:]} (skill)")
+        elif token.startswith("@openapi:"):
+            labels.append(f"{token[9:]} (openapi)")
+        elif token.startswith("@toolset:"):
+            labels.append(f"{token[9:]} (toolset)")
+        else:
+            labels.append(token)
+
+    note = "Referenced context: " + ", ".join(labels) + ".\nUse these resources when relevant."
+    return f"{SYSTEM_PROMPT}\n\n{note}"
+
+
 @app.post("/api/chat")
 async def chat_endpoint(request: Request) -> StreamingResponse:
+    uid = firebase_admin_support.resolve_uid(request)
     body = await request.json()
     messages = body.get("messages", [])
     prompt = ui_messages_to_agent_input(messages)
@@ -602,17 +758,35 @@ async def chat_endpoint(request: Request) -> StreamingResponse:
     if isinstance(messages, list) and messages and isinstance(messages[-1], dict):
         last_role = messages[-1].get("role")
     session_id = body.get("sessionId") or body.get("session_id")
+    mentions = body.get("mentions")
+    if isinstance(mentions, str):
+        mentions = [mentions]
+    mentions = [str(m).strip() for m in (mentions or []) if str(m).strip()]
+    system_prompt = _build_system_prompt_with_mentions(mentions)
+
+    # Load this user's Google credentials (if connected). A refresh failure
+    # (revoked/expired grant) is logged and treated as "not connected" so the
+    # agent surfaces a reconnect message rather than crashing the request.
+    injected_google = None
+    try:
+        injected_google = google_credentials.load_user_credentials(uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Google credential load failed for uid=%s: %s", uid, exc)
+
     logger.info(
-        "chat_request message_count=%s trigger=%s last_role=%s converted_messages=%s session_id=%s",
+        "chat_request uid=%s message_count=%s trigger=%s last_role=%s converted_messages=%s session_id=%s mentions=%s google_connected=%s",
+        uid,
         len(messages) if isinstance(messages, list) else 0,
         body.get("trigger"),
         last_role,
         len(prompt),
         session_id,
+        len(mentions),
+        injected_google is not None,
     )
-    session_agent = await _create_agent_for_request(None, prompt)
+    session_agent = await _create_agent_for_request(None, prompt, session_id, system_prompt)
     return StreamingResponse(
-        strands_to_aisdk_stream(prompt, session_agent),
+        stream_with_request_context(prompt, session_agent, uid, injected_google),
         media_type="text/event-stream",
         headers={
             "x-vercel-ai-ui-message-stream": "v1",
@@ -620,6 +794,129 @@ async def chat_endpoint(request: Request) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@app.get("/api/settings/environment")
+async def get_environment_settings(request: Request) -> dict[str, Any]:
+    """Return the signed-in user's environment variables (sensitive values masked)."""
+    uid = firebase_admin_support.resolve_uid(request)
+    return {
+        "schema_version": 1,
+        "variables": tenant_environment.tenant_env_list_for_uid(uid),
+    }
+
+
+@app.post("/api/settings/environment")
+async def set_environment_setting(request: Request) -> dict[str, Any]:
+    uid = firebase_admin_support.resolve_uid(request)
+    body = await request.json()
+    name = body.get("name")
+    value = body.get("value")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    if value is None:
+        raise HTTPException(status_code=400, detail="value is required")
+    try:
+        tenant_environment.tenant_env_set_for_uid(uid, name, str(value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "name": name.strip()}
+
+
+@app.delete("/api/settings/environment/{name}")
+async def delete_environment_setting(name: str, request: Request) -> dict[str, Any]:
+    uid = firebase_admin_support.resolve_uid(request)
+    try:
+        tenant_environment.tenant_env_delete_for_uid(uid, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "name": name.strip()}
+
+
+@app.get("/api/catalog")
+async def get_catalog() -> dict[str, Any]:
+    """Discover tools, connectors, skills, OpenAPI specs, and toolsets."""
+    overview = tool_catalog_support.build_catalog_overview(None)
+    skills_catalog = skills_support.build_skills_catalog()
+    return {
+        "schema_version": 1,
+        "tools": overview.get("categories", []),
+        "connectors": [
+            category
+            for category in overview.get("categories", [])
+            if category.get("mcp_servers")
+        ],
+        "skills": skills_catalog.get("skills", []),
+        "openapiSpecs": [
+            category
+            for category in overview.get("categories", [])
+            if category.get("openapi_specs")
+        ],
+        "toolsets": overview.get("toolsets", []),
+    }
+
+
+@app.get("/api/google/scopes")
+async def get_google_scopes() -> dict[str, Any]:
+    """Return the selectable Google scope catalog for the connect UI."""
+    return {"schema_version": 1, "scopes": google_credentials.scope_catalog()}
+
+
+@app.get("/api/google/status")
+async def get_google_status(request: Request) -> dict[str, Any]:
+    """Report whether the signed-in user has connected Google, and which scopes."""
+    uid = firebase_admin_support.resolve_uid(request)
+    return google_credentials.connection_status(uid)
+
+
+@app.post("/api/google/connect")
+async def connect_google(request: Request) -> dict[str, Any]:
+    """Exchange a GIS authorization code for tokens and persist them per uid."""
+    uid = firebase_admin_support.resolve_uid(request)
+    body = await request.json()
+    code = body.get("code")
+    if not isinstance(code, str) or not code.strip():
+        raise HTTPException(status_code=400, detail="code is required")
+    redirect_uri = body.get("redirectUri") or body.get("redirect_uri") or "postmessage"
+    selection = body.get("scopes") or []
+    scopes = google_credentials.resolve_scopes(selection)
+
+    try:
+        tokens = google_credentials.exchange_authorization_code(str(code), str(redirect_uri))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google did not return a refresh token. Re-run the consent flow with "
+                "access_type=offline and prompt=consent, and revoke prior access if needed."
+            ),
+        )
+
+    granted = tokens.get("scope")
+    if isinstance(granted, str) and granted.strip():
+        scopes = google_credentials.resolve_scopes(granted.split())
+
+    google_credentials.save_connection(uid, refresh_token=str(refresh_token), scopes=scopes)
+    return {"success": True, "connected": True, "scopes": scopes}
+
+
+@app.delete("/api/google/connect")
+async def disconnect_google(request: Request) -> dict[str, Any]:
+    """Revoke the user's Google grant and delete the stored token doc."""
+    uid = firebase_admin_support.resolve_uid(request)
+    data = google_credentials.get_connection(uid)
+    if data and data.get("encrypted_refresh_token"):
+        try:
+            refresh_token = google_credentials.decrypt_secret(str(data["encrypted_refresh_token"]))
+            google_credentials.revoke_token(refresh_token)
+        except Exception as exc:  # noqa: BLE001 - revocation is best-effort
+            logger.warning("Google revoke failed for uid=%s: %s", uid, exc)
+    google_credentials.delete_connection(uid)
+    return {"success": True, "connected": False}
 
 
 if __name__ == "__main__":

@@ -39,6 +39,12 @@ import type {
   ProviderComposerSubmitPayload,
   ProviderTabAttachment,
 } from './providerChatTypes'
+import {
+  PromptMentionPicker,
+  usePromptMentionPicker,
+  type PromptMentionCatalog,
+} from './PromptMentionPicker'
+import { usePromptMentions } from './usePromptMentions'
 
 const EASE = [0.16, 1, 0.3, 1] as const
 
@@ -175,6 +181,121 @@ export function ProviderPromptInput({
   const [isFocused, setIsFocused] = useState(false)
   const [isLoadingTabs, setIsLoadingTabs] = useState(false)
   const [tabLoadError, setTabLoadError] = useState<string | null>(null)
+  const [catalog, setCatalog] = useState<PromptMentionCatalog>({
+    env: [],
+    tools: [],
+    connectors: [],
+    skills: [],
+    openapiSpecs: [],
+    toolsets: [],
+  })
+
+  const { extractMentions } = usePromptMentions()
+
+  const mentionPicker = usePromptMentionPicker({
+    textareaRef,
+    value,
+    onChange: setValue,
+    catalog,
+    disabled: isStreaming,
+  })
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/catalog')
+      .then(async (response) => {
+        if (!response.ok) return
+        const data = (await response.json()) as {
+          tools?: Array<{ id?: string; label?: string; tools?: Array<{ name?: string; description?: string }> }>
+          connectors?: Array<{ id?: string; label?: string; mcp_servers?: Array<{ name?: string; description?: string }> }>
+          skills?: Array<{ name?: string; description?: string }>
+          openapiSpecs?: Array<{ id?: string; label?: string; openapi_specs?: Array<{ name?: string; description?: string }> }>
+          toolsets?: Array<{ name?: string; description?: string }>
+        }
+        if (!active) return
+        setCatalog({
+          env: [],
+          tools:
+            data.tools?.flatMap((category) =>
+              (category.tools ?? []).map((tool) => ({
+                id: `tool:${tool.name ?? ''}`,
+                name: tool.name ?? '',
+                description: tool.description,
+                kind: 'tool' as const,
+                category: 'tool',
+              })),
+            ) ?? [],
+          connectors:
+            data.connectors?.flatMap((category) =>
+              (category.mcp_servers ?? []).map((server) => ({
+                id: `connector:${server.name ?? ''}`,
+                name: server.name ?? '',
+                description: server.description,
+                kind: 'connector' as const,
+                category: 'connector',
+              })),
+            ) ?? [],
+          skills:
+            data.skills?.map((skill) => ({
+              id: `skill:${skill.name ?? ''}`,
+              name: skill.name ?? '',
+              description: skill.description,
+              kind: 'skill' as const,
+              category: 'skill',
+            })) ?? [],
+          openapiSpecs:
+            data.openapiSpecs?.flatMap((category) =>
+              (category.openapi_specs ?? []).map((spec) => ({
+                id: `openapi:${spec.name ?? ''}`,
+                name: spec.name ?? '',
+                description: spec.description,
+                kind: 'openapi' as const,
+                category: 'openapi',
+              })),
+            ) ?? [],
+          toolsets:
+            data.toolsets?.map((toolset) => ({
+              id: `toolset:${toolset.name ?? ''}`,
+              name: toolset.name ?? '',
+              description: toolset.description,
+              kind: 'toolset' as const,
+              category: 'toolset',
+            })) ?? [],
+        })
+      })
+      .catch(() => {
+        // Catalog is optional for the picker; leave empty on failure.
+      })
+
+    const handleEnvUpdate = () => {
+      void fetch('/api/settings/environment')
+        .then(async (response) => {
+          if (!response.ok) return
+          const data = (await response.json()) as {
+            variables?: Array<{ name?: string; value?: string; protected?: boolean }>
+          }
+          if (!active) return
+          setCatalog((current) => ({
+            ...current,
+            env:
+              data.variables?.map((variable) => ({
+                id: `env:${variable.name ?? ''}`,
+                name: variable.name ?? '',
+                description: variable.protected ? 'Protected' : undefined,
+                kind: 'env' as const,
+                category: 'env',
+              })) ?? [],
+          }))
+        })
+        .catch(() => {})
+    }
+
+    handleEnvUpdate()
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -277,11 +398,13 @@ export function ProviderPromptInput({
     if (!hasContent || isStreaming) return
 
     const normalizedTabs = selectedTabs.map(normalizeTab)
+    const displayText = value.trim()
     onSubmit({
-      displayText: value.trim(),
+      displayText,
       files,
       promptText: buildPromptText(value, files, normalizedTabs),
       tabAttachments: normalizedTabs,
+      mentions: extractMentions(displayText),
     })
 
     setValue('')
@@ -309,6 +432,13 @@ export function ProviderPromptInput({
       ) : null}
 
       <div className="relative">
+        <PromptMentionPicker
+          open={mentionPicker.open}
+          query={mentionPicker.query}
+          position={mentionPicker.position}
+          groupedItems={mentionPicker.groupedItems}
+          onSelect={mentionPicker.insertMention}
+        />
         <div
           className={cn(
             'absolute -inset-4 rounded-[36px] transition-all duration-500',

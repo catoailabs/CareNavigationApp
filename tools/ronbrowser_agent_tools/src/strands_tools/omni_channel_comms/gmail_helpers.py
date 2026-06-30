@@ -116,7 +116,7 @@ def gmail_send(
         )
     """
     # Import use_google from same package
-    from strands_google.use_google import use_google
+    from strands_tools.devops.use_google import use_google
 
     # Get sender email if "me"
     if sender == "me":
@@ -184,7 +184,7 @@ def gmail_reply(
         )
     """
     # Import use_google from same package
-    from strands_google.use_google import use_google
+    from strands_tools.devops.use_google import use_google
 
     # Get original message to extract thread_id and headers
     msg_result = use_google(

@@ -80,6 +80,7 @@ def _decode_embedding_value(value: Any) -> list[float]:
 
 
 def _request_contextualized_embeddings(documents: list[list[str]], *, model: str) -> list[list[list[float]]]:
+    """Call Perplexity /v1/contextualizedembeddings and decode base64_int8 vectors."""
     response = httpx.post(
         f"{PERPLEXITY_API_BASE_URL}/v1/contextualizedembeddings",
         headers={
@@ -116,11 +117,42 @@ def _request_contextualized_embeddings(documents: list[list[str]], *, model: str
     return extracted
 
 
-def _embed_document_chunks(chunks: list[str], *, store_path: Path) -> list[list[float]]:
-    documents = _request_contextualized_embeddings([chunks], model=_store_model(store_path))
+def _embed_texts_resilient(
+    texts: list[str],
+    *,
+    store_path: Path,
+    max_tokens_per_document: int = 30_000,
+) -> list[list[float]]:
+    """Embed a flat list of texts, splitting by token budget if Perplexity 400s.
+
+    Perplexity counts the contextualized embedding text on its own tokenizer,
+    which can report ~2.5x the tokens estimated by our char heuristic. We
+    therefore cap batches at ~30k reported tokens and bisect on 400 errors.
+    """
+    try:
+        documents = _request_contextualized_embeddings([texts], model=_store_model(store_path))
+    except httpx.HTTPStatusError as exc:
+        if exc.response is None or exc.response.status_code != 400 or len(texts) == 1:
+            raise
+        split_idx = max(1, len(texts) // 2)
+        left = _embed_texts_resilient(texts[:split_idx], store_path=store_path)
+        right = _embed_texts_resilient(texts[split_idx:], store_path=store_path)
+        return left + right
     if len(documents) != 1:
         raise RuntimeError(f"Expected one document embedding result, received {len(documents)}")
-    vectors = documents[0]
+    return documents[0]
+
+
+def _embed_document_chunks(chunks: list[str], *, store_path: Path) -> list[list[float]]:
+    vectors: list[list[float]] = []
+    # Perplexity caps a single document at 32k tokens. The contextualized
+    # embedding wrapper adds metadata and context windows, so a single chunk
+    # can exceed the limit if the source text is dense. We size batches
+    # conservatively and bisect on 400 errors.
+    batch_size = 18
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start:start + batch_size]
+        vectors.extend(_embed_texts_resilient(batch, store_path=store_path))
     if len(vectors) != len(chunks):
         raise RuntimeError(
             f"Expected {len(chunks)} chunk embeddings for document, received {len(vectors)}"
