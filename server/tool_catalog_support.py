@@ -1,30 +1,30 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
-import inspect
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from strands import Agent
+from strands.tools.registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
-OPENAPI_ROOT = TOOLS_ROOT / "open-api-specs"
 MCP_ROOT = TOOLS_ROOT / "mcp"
-RONBROWSER_STRANDS_ROOT = TOOLS_ROOT / "ronbrowser_agent_tools" / "src" / "strands_tools"
+OPENAPI_ROOT = TOOLS_ROOT / "open-api-specs"
 TOOLSET_STORE_PATH = TOOLS_ROOT / ".tool_catalog_toolsets.json"
 
-from server.agent_tooling import BASELINE_TOOL_REGISTRY
+CATALOG_SCAN_ROOTS: tuple[tuple[Path, bool], ...] = (
+    (TOOLS_ROOT, True),
+    (TOOLS_ROOT / "ronbrowser_agent_tools" / "src" / "strands_tools", False),
+)
 
-BASELINE_TOOL_NAMES = frozenset(BASELINE_TOOL_REGISTRY)
-PROTECTED_TOOL_NAMES = BASELINE_TOOL_NAMES
-EXCLUDED_TOOL_ROOTS = {"__pycache__", "mcp", "ronbrowser_agent_tools"}
+EXCLUDED_TOOL_ROOTS = {"__pycache__", "mcp", "ronbrowser_agent_tools", "open-api-specs"}
 OPENAPI_EXTENSIONS = {".json", ".yaml", ".yml"}
 MCP_MARKER_FILES = {
     "Dockerfile",
@@ -63,17 +63,22 @@ class CatalogEntry:
             "kind": self.kind,
             "path": self.path,
             "module_path": self.module_path,
-            "load_pathway": f"load_catalog_tool(name={json.dumps(self.name)})"
-            if self.kind == "tool"
-            else None,
+            "load_spec": self.load_spec,
+            "load_pathway": (
+                f"load_catalog_tool(name={json.dumps(self.name)})"
+                if self.kind == "tool"
+                else None
+            ),
             "execute_pathway": (
                 f"execute_catalog_tool(name={json.dumps(self.name)}, arguments={{...}})"
                 if self.kind == "tool"
                 else None
             ),
-            "unload_pathway": f"unload_catalog_tool(name={json.dumps(self.name)})"
-            if self.kind == "tool"
-            else None,
+            "unload_pathway": (
+                f"unload_catalog_tool(name={json.dumps(self.name)})"
+                if self.kind == "tool"
+                else None
+            ),
         }
 
 
@@ -84,28 +89,20 @@ def _first_line(text: str | None) -> str:
     return ""
 
 
-def _normalize_identifier(value: str | None, *, default: str = "misc") -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
-    return normalized or default
-
-
-def _category_label(category_id: str) -> str:
-    return category_id.replace("_", " ").title()
-
-
 def _inventory_relative_path(path: Path) -> Path:
     resolved_path = path.resolve()
-    resolved_ronbrowser_root = RONBROWSER_STRANDS_ROOT.resolve()
-    if resolved_path.is_relative_to(resolved_ronbrowser_root):
-        return resolved_path.relative_to(resolved_ronbrowser_root)
+    ronbrowser_root = (TOOLS_ROOT / "ronbrowser_agent_tools" / "src" / "strands_tools").resolve()
+    if resolved_path.is_relative_to(ronbrowser_root):
+        return resolved_path.relative_to(ronbrowser_root)
     return resolved_path.relative_to(TOOLS_ROOT.resolve())
 
 
-def _category_for_repo_path(path: Path) -> str:
-    relative_path = _inventory_relative_path(path)
-    if len(relative_path.parts) == 1:
+def _category_for_path(path: Path) -> str:
+    relative = _inventory_relative_path(path)
+    parts = relative.parts
+    if len(parts) <= 1:
         return "root"
-    return _normalize_identifier(relative_path.parts[0])
+    return parts[0]
 
 
 def _module_path_for_file(path: Path) -> str | None:
@@ -116,15 +113,6 @@ def _module_path_for_file(path: Path) -> str | None:
     return ".".join(relative.parts)
 
 
-def _tool_method_name(name: str) -> str:
-    return name.replace("-", "_")
-
-
-def _tool_registry_names(name: str) -> list[str]:
-    method_name = _tool_method_name(name)
-    return [name] if method_name == name else [name, method_name]
-
-
 def _input_summary(schema: dict[str, Any]) -> dict[str, str]:
     properties = schema.get("properties")
     if not isinstance(properties, dict):
@@ -133,74 +121,10 @@ def _input_summary(schema: dict[str, Any]) -> dict[str, str]:
     for key, value in properties.items():
         if isinstance(value, dict):
             raw_type = value.get("type", "any")
-            if isinstance(raw_type, list):
-                summary[key] = " | ".join(str(item) for item in raw_type)
-            else:
-                summary[key] = str(raw_type)
+            summary[key] = " | ".join(str(item) for item in raw_type) if isinstance(raw_type, list) else str(raw_type)
         else:
             summary[key] = "any"
     return summary
-
-
-def _extract_runtime_path(tool_obj: Any) -> str | None:
-    candidates: list[str | None] = []
-    for target in (tool_obj, getattr(tool_obj, "__call__", None)):
-        if target is None:
-            continue
-        try:
-            candidates.append(inspect.getsourcefile(target))
-        except Exception:
-            continue
-    try:
-        module = inspect.getmodule(tool_obj)
-        if module is not None:
-            candidates.append(getattr(module, "__file__", None))
-    except Exception:
-        pass
-    for candidate in candidates:
-        if candidate:
-            return str(Path(candidate).resolve())
-    return None
-
-
-def _extract_runtime_module_path(tool_obj: Any) -> str | None:
-    tool_spec = getattr(tool_obj, "tool_spec", None)
-    if isinstance(tool_spec, dict):
-        module_path = tool_spec.get("module_path")
-        if isinstance(module_path, str) and module_path.strip():
-            return module_path.strip()
-    module = inspect.getmodule(tool_obj)
-    if module is None:
-        return None
-    module_name = getattr(module, "__name__", None)
-    return module_name.strip() if isinstance(module_name, str) and module_name.strip() else None
-
-
-def _extract_runtime_input_schema(tool_obj: Any) -> dict[str, Any]:
-    for attr_name in ("tool_spec", "TOOL_SPEC"):
-        tool_spec = getattr(tool_obj, attr_name, None)
-        if not isinstance(tool_spec, dict):
-            continue
-        schema = tool_spec.get("inputSchema") or tool_spec.get("input_schema") or {}
-        if isinstance(schema, dict) and isinstance(schema.get("json"), dict):
-            return dict(schema["json"])
-        if isinstance(schema, dict):
-            return dict(schema)
-    return {}
-
-
-def _extract_runtime_description(tool_obj: Any) -> str:
-    for attr_name in ("tool_spec", "TOOL_SPEC"):
-        tool_spec = getattr(tool_obj, attr_name, None)
-        if not isinstance(tool_spec, dict):
-            continue
-        description = tool_spec.get("description")
-        if isinstance(description, str) and description.strip():
-            return _first_line(description)
-    doc = inspect.getdoc(tool_obj)
-    if not doc and callable(tool_obj):
-        doc = inspect.getdoc(tool_obj.__call__)
-    return _first_line(doc)
 
 
 def _safe_eval_ast(node: ast.AST) -> Any:
@@ -274,7 +198,7 @@ def _decorator_name(decorator: ast.expr) -> str | None:
 def _decorated_tool_entries(path: Path, tree: ast.Module) -> list[CatalogEntry]:
     decorator_aliases = _tool_decorator_aliases(tree)
     module_path = _module_path_for_file(path)
-    category = _category_for_repo_path(path)
+    category = _category_for_path(path)
     entries: list[CatalogEntry] = []
     seen: set[str] = set()
 
@@ -305,12 +229,10 @@ def _decorated_tool_entries(path: Path, tree: ast.Module) -> list[CatalogEntry]:
         if tool_name in seen:
             continue
         seen.add(tool_name)
-        load_spec = f"{module_path}:{tool_name}" if module_path else str(path.resolve())
-        description = description_override or _first_line(ast.get_docstring(node))
         entries.append(
             CatalogEntry(
                 name=tool_name,
-                description=description,
+                description=description_override or _first_line(ast.get_docstring(node)),
                 input_schema={},
                 input_summary={},
                 origin="catalog",
@@ -318,7 +240,7 @@ def _decorated_tool_entries(path: Path, tree: ast.Module) -> list[CatalogEntry]:
                 kind="tool",
                 path=str(path.resolve()),
                 module_path=module_path,
-                load_spec=load_spec,
+                load_spec=module_path,
             )
         )
     return entries
@@ -340,23 +262,28 @@ def _module_tool_entry(path: Path, tree: ast.Module) -> CatalogEntry | None:
         input_schema=input_schema,
         input_summary=_input_summary(input_schema),
         origin="catalog",
-        category=_category_for_repo_path(path),
+        category=_category_for_path(path),
         kind="tool",
         path=str(path.resolve()),
         module_path=module_path,
-        load_spec=module_path or str(path.resolve()),
+        load_spec=module_path,
     )
 
 
 def _iter_python_tool_files(root: Path, *, apply_root_exclusions: bool) -> list[Path]:
     files: list[Path] = []
+    if not root.exists():
+        return files
     resolved_tools_root = TOOLS_ROOT.resolve()
     for path in root.rglob("*.py"):
         if path.name == "__init__.py":
             continue
         if apply_root_exclusions:
-            relative = path.resolve().relative_to(resolved_tools_root)
-            if relative.parts and relative.parts[0] in EXCLUDED_TOOL_ROOTS:
+            try:
+                relative = path.resolve().relative_to(resolved_tools_root)
+                if relative.parts and relative.parts[0] in EXCLUDED_TOOL_ROOTS:
+                    continue
+            except ValueError:
                 continue
         files.append(path)
     return files
@@ -364,13 +291,7 @@ def _iter_python_tool_files(root: Path, *, apply_root_exclusions: bool) -> list[
 
 def _scan_python_tool_entries() -> dict[str, CatalogEntry]:
     entries: dict[str, CatalogEntry] = {}
-    scan_roots = (
-        (TOOLS_ROOT, True),
-        (RONBROWSER_STRANDS_ROOT, False),
-    )
-    for root, apply_root_exclusions in scan_roots:
-        if not root.exists():
-            continue
+    for root, apply_root_exclusions in CATALOG_SCAN_ROOTS:
         for path in _iter_python_tool_files(root, apply_root_exclusions=apply_root_exclusions):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
@@ -395,8 +316,10 @@ def _scan_mcp_entries() -> dict[str, CatalogEntry]:
         if not any((child / marker).exists() for marker in MCP_MARKER_FILES):
             continue
         readme = child / "README.md"
-        description = _first_line(readme.read_text(encoding="utf-8", errors="ignore")) if readme.exists() else ""
-        entry = CatalogEntry(
+        description = ""
+        if readme.exists():
+            description = _first_line(readme.read_text(encoding="utf-8", errors="ignore"))
+        entries[child.name] = CatalogEntry(
             name=child.name,
             description=description,
             input_schema={},
@@ -406,7 +329,6 @@ def _scan_mcp_entries() -> dict[str, CatalogEntry]:
             kind="mcp_server",
             path=str(child.resolve()),
         )
-        entries[entry.name] = entry
     return entries
 
 
@@ -417,15 +339,12 @@ def _scan_openapi_entries() -> dict[str, CatalogEntry]:
     for path in OPENAPI_ROOT.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in OPENAPI_EXTENSIONS:
             continue
-        # Preserve the inventory path under OPENAPI_ROOT instead of the resolved target path.
-        # This keeps symlinked specs catalogable even when they point outside the repo.
         try:
             relative = path.relative_to(OPENAPI_ROOT).with_suffix("")
         except ValueError:
-            LOGGER.debug("Skipping OpenAPI path outside inventory root: %s", path)
             continue
-        category = _normalize_identifier(relative.parts[0] if len(relative.parts) > 1 else "open_api_specs")
-        entry = CatalogEntry(
+        category = relative.parts[0] if len(relative.parts) > 1 else "open_api_specs"
+        entries[relative.as_posix()] = CatalogEntry(
             name=relative.as_posix(),
             description="",
             input_schema={},
@@ -435,63 +354,100 @@ def _scan_openapi_entries() -> dict[str, CatalogEntry]:
             kind="openapi_spec",
             path=str(path.resolve()),
         )
-        entries[entry.name] = entry
     return entries
 
 
-def _scan_runtime_entries(agent: Any) -> dict[str, CatalogEntry]:
-    registry = getattr(agent, "tool_registry", None)
+def _extract_schema(tool_obj: Any) -> dict[str, Any]:
+    spec = getattr(tool_obj, "tool_spec", None)
+    if isinstance(spec, dict):
+        schema = spec.get("inputSchema") or spec.get("input_schema") or {}
+        if isinstance(schema, dict):
+            if isinstance(schema.get("json"), dict):
+                return dict(schema["json"])
+            return dict(schema)
+    return {}
+
+
+def _extract_description(tool_obj: Any) -> str:
+    spec = getattr(tool_obj, "tool_spec", None)
+    if isinstance(spec, dict):
+        description = spec.get("description")
+        if isinstance(description, str):
+            return _first_line(description)
+    doc = getattr(tool_obj, "__doc__", None)
+    if isinstance(doc, str):
+        return _first_line(doc)
+    return ""
+
+
+def _scan_runtime_entries(agent: Agent | None) -> dict[str, CatalogEntry]:
+    if agent is None:
+        return {}
+    registry: ToolRegistry | None = getattr(agent, "tool_registry", None)
     if registry is None:
         return {}
 
     entries: dict[str, CatalogEntry] = {}
-    for tool_name, tool_obj in getattr(registry, "registry", {}).items():
-        path = _extract_runtime_path(tool_obj)
-        category = "loaded"
-        if tool_name in BASELINE_TOOL_NAMES:
-            category = "baseline"
-        elif path:
-            path_obj = Path(path)
+    for tool_name, tool_obj in registry.registry.items():
+        module = getattr(tool_obj, "__module__", None)
+        path: str | None = None
+        module_path: str | None = None
+        if isinstance(module, str):
+            module_path = module
             try:
-                if path_obj.resolve().is_relative_to(TOOLS_ROOT.resolve()):
-                    category = _category_for_repo_path(path_obj)
+                mod = __import__(module, fromlist=["__file__"])
+                file_path = getattr(mod, "__file__", None)
+                if isinstance(file_path, str):
+                    path = str(Path(file_path).resolve())
             except Exception:
                 pass
-
-        input_schema = _extract_runtime_input_schema(tool_obj)
+        origin = "baseline"
+        category = "baseline"
+        if path:
+            try:
+                category = _category_for_path(Path(path))
+            except Exception:
+                pass
+            resolved_path = Path(path).resolve()
+            ronbrowser_root = (TOOLS_ROOT / "ronbrowser_agent_tools").resolve()
+            try:
+                if resolved_path.is_relative_to(ronbrowser_root):
+                    origin = "vended"
+            except Exception:
+                pass
         entries[tool_name] = CatalogEntry(
             name=tool_name,
-            description=_extract_runtime_description(tool_obj),
-            input_schema=input_schema,
-            input_summary=_input_summary(input_schema),
-            origin="runtime" if tool_name not in BASELINE_TOOL_NAMES else "baseline",
+            description=_extract_description(tool_obj),
+            input_schema=_extract_schema(tool_obj),
+            input_summary=_input_summary(_extract_schema(tool_obj)),
+            origin=origin,
             category=category,
             kind="tool",
             path=path,
-            module_path=_extract_runtime_module_path(tool_obj),
+            module_path=module_path,
+            load_spec=module_path or path,
         )
     return entries
 
 
 def _catalog_indices(
-    agent: Any,
+    agent: Agent | None,
 ) -> tuple[dict[str, CatalogEntry], dict[str, CatalogEntry], dict[str, CatalogEntry]]:
     tool_entries = _scan_python_tool_entries()
     tool_entries.update(_scan_runtime_entries(agent))
     return tool_entries, _scan_mcp_entries(), _scan_openapi_entries()
 
 
-def build_catalog_overview(agent: Any) -> dict[str, Any]:
+def build_catalog_overview(agent: Agent | None) -> dict[str, Any]:
     tool_entries, mcp_entries, openapi_entries = _catalog_indices(agent)
     categories: dict[str, dict[str, Any]] = {}
 
     def ensure_bucket(category_id: str) -> dict[str, Any]:
-        category_id = _normalize_identifier(category_id)
         bucket = categories.get(category_id)
         if bucket is None:
             bucket = {
                 "id": category_id,
-                "label": _category_label(category_id),
+                "label": category_id.replace("_", " ").title(),
                 "tools": [],
                 "mcp_servers": [],
                 "openapi_specs": [],
@@ -514,8 +470,8 @@ def build_catalog_overview(agent: Any) -> dict[str, Any]:
             return (1, category_id)
         return (2, category_id)
 
-    ordered_categories: list[dict[str, Any]] = []
-    for bucket in sorted(categories.values(), key=sort_key):
+    ordered_categories = sorted(categories.values(), key=sort_key)
+    for bucket in ordered_categories:
         tool_count = len(bucket["tools"])
         mcp_count = len(bucket["mcp_servers"])
         spec_count = len(bucket["openapi_specs"])
@@ -525,7 +481,6 @@ def build_catalog_overview(agent: Any) -> dict[str, Any]:
             "openapi_specs": spec_count,
             "total": tool_count + mcp_count + spec_count,
         }
-        ordered_categories.append(bucket)
 
     return {
         "schema_version": 1,
@@ -540,7 +495,9 @@ def build_catalog_overview(agent: Any) -> dict[str, Any]:
     }
 
 
-def get_tool_details(agent: Any, name: str) -> dict[str, Any] | None:
+def get_tool_details(agent: Agent | None, name: str | None) -> dict[str, Any] | None:
+    if not name:
+        return None
     tool_entries, mcp_entries, openapi_entries = _catalog_indices(agent)
     for entries in (tool_entries, mcp_entries, openapi_entries):
         entry = entries.get(name)
@@ -549,16 +506,18 @@ def get_tool_details(agent: Any, name: str) -> dict[str, Any] | None:
     return None
 
 
-def _tool_entry(agent: Any, name: str) -> CatalogEntry | None:
+def _tool_entry(agent: Agent | None, name: str | None) -> CatalogEntry | None:
+    if not name:
+        return None
     tool_entries, _, _ = _catalog_indices(agent)
     return tool_entries.get(name)
 
 
-def get_tools_by_category(agent: Any, category_id: str) -> list[CatalogEntry]:
-    normalized = _normalize_identifier(category_id)
+def get_tools_by_category(agent: Agent | None, category_id: str) -> list[CatalogEntry]:
+    normalized = category_id.strip().lower().replace(" ", "_")
     tool_entries, _, _ = _catalog_indices(agent)
     return sorted(
-        [entry for entry in tool_entries.values() if entry.category == normalized],
+        [entry for entry in tool_entries.values() if entry.category.lower() == normalized],
         key=lambda item: item.name.lower(),
     )
 
@@ -621,7 +580,7 @@ def _normalize_tool_names(tool_names: list[str] | None) -> list[str]:
 
 
 def _resolve_tool_names(
-    agent: Any, tool_names: list[str]
+    agent: Agent | None, tool_names: list[str]
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     resolved: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -638,7 +597,7 @@ def _resolve_tool_names(
     return resolved, missing, invalid
 
 
-def _validated_tool_names(agent: Any, tool_names: list[str] | None) -> list[str]:
+def _validated_tool_names(agent: Agent | None, tool_names: list[str] | None) -> list[str]:
     normalized = _normalize_tool_names(tool_names)
     if not normalized:
         raise ValueError("tool_names must include at least one cataloged tool")
@@ -652,7 +611,7 @@ def _validated_tool_names(agent: Any, tool_names: list[str] | None) -> list[str]
     return normalized
 
 
-def _toolset_record(agent: Any, name: str, definition: dict[str, Any]) -> dict[str, Any]:
+def _toolset_record(agent: Agent | None, name: str, definition: dict[str, Any]) -> dict[str, Any]:
     tool_names = _normalize_tool_names(definition.get("tool_names", []))
     resolved_tools, missing_tools, invalid_members = _resolve_tool_names(agent, tool_names)
     return {
@@ -675,12 +634,12 @@ def _toolset_record(agent: Any, name: str, definition: dict[str, Any]) -> dict[s
     }
 
 
-def list_toolset_records(agent: Any) -> list[dict[str, Any]]:
+def list_toolset_records(agent: Agent | None) -> list[dict[str, Any]]:
     store = _read_toolset_store()
     return [_toolset_record(agent, name, store["toolsets"][name]) for name in sorted(store["toolsets"])]
 
 
-def get_toolset_record(agent: Any, name: str) -> dict[str, Any] | None:
+def get_toolset_record(agent: Agent | None, name: str | None) -> dict[str, Any] | None:
     normalized_name = _normalize_toolset_name(name)
     definition = _read_toolset_store()["toolsets"].get(normalized_name)
     if definition is None:
@@ -689,7 +648,7 @@ def get_toolset_record(agent: Any, name: str) -> dict[str, Any] | None:
 
 
 def save_toolset(
-    agent: Any,
+    agent: Agent | None,
     *,
     name: str | None,
     description: str | None,
@@ -728,102 +687,69 @@ def delete_toolset(name: str | None) -> dict[str, Any]:
     }
 
 
-def _loaded_toolsets_map(agent: Any) -> dict[str, list[str]]:
-    registry = getattr(agent, "tool_registry", None)
-    if registry is None:
-        return {}
-    loaded_toolsets = getattr(registry, "_tool_catalog_loaded_toolsets", None)
-    if not isinstance(loaded_toolsets, dict):
-        loaded_toolsets = {}
-        registry._tool_catalog_loaded_toolsets = loaded_toolsets
-    return loaded_toolsets
-
-
-def _is_tool_loaded(agent: Any, tool_name: str) -> bool:
-    registry = getattr(agent, "tool_registry", None)
+def _is_tool_loaded(agent: Agent, tool_name: str) -> bool:
+    registry: ToolRegistry | None = getattr(agent, "tool_registry", None)
     if registry is None:
         return False
-    return any(candidate in registry.registry for candidate in _tool_registry_names(tool_name))
+    return tool_name in registry.registry
 
 
-def _validate_load_spec(load_spec: str) -> str:
-    expanded = os.path.expanduser(load_spec)
-    if os.path.exists(expanded):
-        return str(Path(expanded).resolve())
-    module_name = load_spec.split(":", 1)[0]
-    if not module_name:
-        raise ValueError(f"Invalid load spec: {load_spec}")
-    if importlib.util.find_spec(module_name) is None:
-        raise FileNotFoundError(f"Unable to resolve module path: {module_name}")
-    return load_spec
-
-
-def _load_tool(agent: Any, tool_name: str, load_spec: str) -> None:
+def _load_tool(agent: Agent, tool_name: str, load_spec: str | None) -> None:
     if os.environ.get("STRANDS_DISABLE_LOAD_TOOL", "").lower() == "true":
         raise RuntimeError("Dynamic tool loading is disabled via STRANDS_DISABLE_LOAD_TOOL=true")
-    validated_spec = _validate_load_spec(load_spec)
-    if os.path.exists(validated_spec):
-        agent.tool_registry.load_tool_from_filepath(tool_name=tool_name, tool_path=validated_spec)
-    else:
-        agent.tool_registry.process_tools([validated_spec])
+    if not load_spec:
+        raise ValueError(f"No load spec for tool: {tool_name}")
+    registry: ToolRegistry | None = getattr(agent, "tool_registry", None)
+    if registry is None:
+        raise RuntimeError("Agent has no tool registry")
+    registry.process_tools([{"name": tool_name, "path": load_spec}])
     if not _is_tool_loaded(agent, tool_name):
         raise RuntimeError(f"Tool loader completed but '{tool_name}' was not registered")
 
 
-def unload_tool(agent: Any, tool_name: str) -> None:
-    if tool_name in PROTECTED_TOOL_NAMES:
-        raise ValueError(f"Cannot unload baseline tool: {tool_name}")
-
-    registry = getattr(agent, "tool_registry", None)
+def unload_tool(agent: Agent, tool_name: str) -> None:
+    registry: ToolRegistry | None = getattr(agent, "tool_registry", None)
     if registry is None:
-        raise ValueError("Agent has no tool registry")
-
-    removed = False
-    if hasattr(registry, "unregister_tool") and callable(registry.unregister_tool):
-        for candidate in _tool_registry_names(tool_name):
-            if candidate in registry.registry:
-                registry.unregister_tool(candidate)
-                removed = True
-    else:
-        for candidate in _tool_registry_names(tool_name):
-            if candidate in registry.registry:
-                registry.registry.pop(candidate, None)
-                removed = True
-            registry.dynamic_tools.pop(candidate, None)
-
-    if not removed:
+        raise RuntimeError("Agent has no tool registry")
+    if tool_name not in registry.registry:
         raise ValueError(f"Tool not loaded: {tool_name}")
-
-    if hasattr(registry, "tool_config"):
-        registry.tool_config = None
-
-    loaded_toolsets = _loaded_toolsets_map(agent)
-    for toolset_name, loaded_names in list(loaded_toolsets.items()):
-        remaining = [name for name in loaded_names if name != tool_name]
-        if remaining:
-            loaded_toolsets[toolset_name] = remaining
-        else:
-            loaded_toolsets.pop(toolset_name, None)
+    registry.registry.pop(tool_name, None)
+    registry.dynamic_tools.pop(tool_name, None)
 
 
-def _execute_loaded_tool(agent: Any, tool_name: str, arguments: dict[str, Any]) -> Any:
-    return getattr(agent.tool, _tool_method_name(tool_name))(**arguments)
+def _execute_loaded_tool(agent: Agent, tool_name: str, arguments: dict[str, Any]) -> Any:
+    method_name = tool_name.replace("-", "_")
+    caller = getattr(agent.tool, method_name)
+    return caller(**arguments)
 
 
-def _resolve_catalog_tool(agent: Any, name: str | None) -> CatalogEntry:
+def _resolve_catalog_tool(agent: Agent | None, name: str | None) -> CatalogEntry:
     if not name:
         raise ValueError("name is required")
+    if agent is not None and _is_tool_loaded(agent, name):
+        for tool_obj in agent.tool_registry.registry.values():
+            if getattr(tool_obj, "tool_name", None) == name:
+                return CatalogEntry(
+                    name=name,
+                    description=_extract_description(tool_obj),
+                    input_schema=_extract_schema(tool_obj),
+                    input_summary=_input_summary(_extract_schema(tool_obj)),
+                    origin="loaded",
+                    category="loaded",
+                    kind="tool",
+                    path=None,
+                    module_path=None,
+                    load_spec=None,
+                )
     entry = _tool_entry(agent, name)
     if entry is None:
         raise ValueError(f"Tool not found: {name}")
     if entry.kind != "tool":
         raise ValueError(f"Catalog entry is not a tool: {name}")
-    if not _is_tool_loaded(agent, entry.name) and not entry.load_spec:
-        raise ValueError(f"No load path found for tool: {name}")
     return entry
 
 
-def list_categories_result(agent: Any) -> dict[str, Any]:
+def list_categories_result(agent: Agent | None) -> dict[str, Any]:
     overview = build_catalog_overview(agent)
     try:
         toolsets = list_toolset_records(agent)
@@ -838,7 +764,7 @@ def list_categories_result(agent: Any) -> dict[str, Any]:
     return {"status": "success", "content": [{"json": overview}]}
 
 
-def get_tool_result(agent: Any, name: str | None) -> dict[str, Any]:
+def get_tool_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
     if not name:
         return {"status": "error", "content": [{"text": "name is required for get_tool"}]}
     details = get_tool_details(agent, name)
@@ -848,12 +774,15 @@ def get_tool_result(agent: Any, name: str | None) -> dict[str, Any]:
 
 
 def execute_result(
-    agent: Any,
+    agent: Agent | None,
     *,
     name: str | None,
     arguments: dict[str, Any] | None,
     tools: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
+    if agent is None:
+        return {"status": "error", "content": [{"text": "Agent is required to execute tools"}]}
+
     invocations = tools if isinstance(tools, list) and tools else None
     if invocations is None:
         if not name:
@@ -870,7 +799,7 @@ def execute_result(
             entry = _resolve_catalog_tool(agent, tool_name)
             loaded_here = False
             if not _is_tool_loaded(agent, entry.name):
-                _load_tool(agent, entry.name, entry.load_spec or "")
+                _load_tool(agent, entry.name, entry.load_spec)
                 loaded_here = True
             try:
                 result = _execute_loaded_tool(agent, entry.name, tool_arguments)
@@ -883,22 +812,31 @@ def execute_result(
             results.append({"name": tool_name, "error": str(exc)})
 
     status = "success" if any_success else "error"
-    payload: Any = results[0]["result"] if len(results) == 1 and any_success and "result" in results[0] else results
+    if len(results) == 1 and any_success and "result" in results[0]:
+        payload: Any = results[0]["result"]
+    else:
+        payload = results
     return {"status": status, "content": [{"json": payload}]}
 
 
-def load_tool_result(agent: Any, name: str | None) -> dict[str, Any]:
+def load_tool_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
+    if agent is None:
+        return {"status": "error", "content": [{"text": "Agent is required to load tools"}]}
+    if not name:
+        return {"status": "error", "content": [{"text": "name is required for load"}]}
     try:
         entry = _resolve_catalog_tool(agent, name)
         if _is_tool_loaded(agent, entry.name):
             return {"status": "success", "content": [{"text": f"Tool already loaded: {entry.name}"}]}
-        _load_tool(agent, entry.name, entry.load_spec or "")
+        _load_tool(agent, entry.name, entry.load_spec)
         return {"status": "success", "content": [{"text": f"Loaded tool: {entry.name}"}]}
     except Exception as exc:
         return {"status": "error", "content": [{"text": str(exc)}]}
 
 
-def unload_tool_result(agent: Any, name: str | None) -> dict[str, Any]:
+def unload_tool_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
+    if agent is None:
+        return {"status": "error", "content": [{"text": "Agent is required to unload tools"}]}
     if not name:
         return {"status": "error", "content": [{"text": "name is required for unload"}]}
     try:
@@ -908,7 +846,7 @@ def unload_tool_result(agent: Any, name: str | None) -> dict[str, Any]:
         return {"status": "error", "content": [{"text": str(exc)}]}
 
 
-def list_toolsets_result(agent: Any) -> dict[str, Any]:
+def list_toolsets_result(agent: Agent | None) -> dict[str, Any]:
     try:
         toolsets = list_toolset_records(agent)
     except Exception as exc:
@@ -927,7 +865,7 @@ def list_toolsets_result(agent: Any) -> dict[str, Any]:
     }
 
 
-def get_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
+def get_toolset_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
     if not name:
         return {"status": "error", "content": [{"text": "name is required for get_toolset"}]}
     try:
@@ -940,7 +878,7 @@ def get_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
 
 
 def create_toolset_result(
-    agent: Any,
+    agent: Agent | None,
     *,
     name: str | None,
     description: str | None,
@@ -960,7 +898,7 @@ def create_toolset_result(
 
 
 def update_toolset_result(
-    agent: Any,
+    agent: Agent | None,
     *,
     name: str | None,
     description: str | None,
@@ -987,7 +925,9 @@ def delete_toolset_result(name: str | None) -> dict[str, Any]:
     return {"status": "success", "content": [{"json": record}]}
 
 
-def load_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
+def load_toolset_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
+    if agent is None:
+        return {"status": "error", "content": [{"text": "Agent is required to load toolsets"}]}
     if not name:
         return {"status": "error", "content": [{"text": "name is required for load_toolset"}]}
 
@@ -1009,12 +949,11 @@ def load_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
     for entry in entries:
         try:
             if not _is_tool_loaded(agent, entry.name):
-                _load_tool(agent, entry.name, entry.load_spec or "")
+                _load_tool(agent, entry.name, entry.load_spec)
             loaded.append(entry.name)
         except Exception as exc:
             errors.append({"name": entry.name, "error": str(exc)})
 
-    _loaded_toolsets_map(agent)[name] = loaded
     summary = f"Loaded {len(loaded)}/{len(entries)} tools from '{name}'"
     if errors:
         summary += f" ({len(errors)} failed)"
@@ -1024,20 +963,19 @@ def load_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
     }
 
 
-def unload_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
+def unload_toolset_result(agent: Agent | None, name: str | None) -> dict[str, Any]:
+    if agent is None:
+        return {"status": "error", "content": [{"text": "Agent is required to unload toolsets"}]}
     if not name:
         return {"status": "error", "content": [{"text": "name is required for unload_toolset"}]}
 
-    loaded_toolsets = _loaded_toolsets_map(agent)
-    tool_names = loaded_toolsets.get(name)
-    if tool_names is None:
-        toolset = get_toolset_record(agent, name)
-        if toolset is not None:
-            tool_names = list(toolset["tool_names"])
-        else:
-            tool_names = [entry.name for entry in get_tools_by_category(agent, name)]
-        if not tool_names:
-            return {"status": "error", "content": [{"text": f"No toolset or category found: {name}"}]}
+    toolset = get_toolset_record(agent, name)
+    if toolset is not None:
+        tool_names = list(toolset["tool_names"])
+    else:
+        tool_names = [entry.name for entry in get_tools_by_category(agent, name)]
+    if not tool_names:
+        return {"status": "error", "content": [{"text": f"No toolset or category found: {name}"}]}
 
     unloaded: list[str] = []
     errors: list[dict[str, str]] = []
@@ -1047,12 +985,6 @@ def unload_toolset_result(agent: Any, name: str | None) -> dict[str, Any]:
             unloaded.append(tool_name)
         except Exception as exc:
             errors.append({"name": tool_name, "error": str(exc)})
-
-    remaining = [tool_name for tool_name in tool_names if tool_name not in unloaded]
-    if remaining:
-        loaded_toolsets[name] = remaining
-    else:
-        loaded_toolsets.pop(name, None)
 
     summary = f"Unloaded {len(unloaded)}/{len(tool_names)} tools from '{name}'"
     if errors:

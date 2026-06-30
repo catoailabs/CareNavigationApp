@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import json
 import logging
@@ -21,8 +20,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from strands import Agent
+from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.event_loop._retry import ModelRetryStrategy
 from strands.models import Model
-from strands.session import FileSessionManager
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.types.agent import AgentInput
 from strands_xai import xAIModel
@@ -75,7 +75,6 @@ _configure_file_logging()
 
 PROJECT_ROOT = _PROJECT_ROOT
 ENV_PATH = PROJECT_ROOT / ".env"
-SESSIONS_DIR = PROJECT_ROOT / ".strands-sessions"
 
 BASELINE_TOOL_MODULES = (
     _m_tool_catalog,
@@ -159,7 +158,9 @@ def validate_agent_configuration(model: Model | None = None) -> None:
 def build_agent(
     *,
     model: Model | None = None,
-    session_manager: FileSessionManager | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    conversation_manager: Any | None = None,
+    retry_strategy: Any | None = None,
 ) -> Agent:
     validate_agent_configuration(model)
     kwargs: dict[str, Any] = {
@@ -167,39 +168,32 @@ def build_agent(
         "system_prompt": SYSTEM_PROMPT,
         "tools": build_baseline_tools(),
         "agent_id": os.getenv("STRANDS_AGENT_ID", DEFAULT_AGENT_ID),
+        "retry_strategy": retry_strategy or ModelRetryStrategy(),
     }
-    if session_manager is not None:
-        kwargs["session_manager"] = session_manager
+    if messages is not None:
+        kwargs["messages"] = messages
+    if conversation_manager is not None:
+        kwargs["conversation_manager"] = conversation_manager
     return Agent(**kwargs)
 
 
-_AGENT_CACHE: dict[str, Agent] = {}
-_AGENT_CACHE_LOCK = asyncio.Lock()
+def _build_conversation_manager() -> SlidingWindowConversationManager:
+    window_size = int(os.getenv("STRANDS_CONVERSATION_WINDOW_SIZE", "40"))
+    return SlidingWindowConversationManager(window_size=window_size, per_turn=1)
 
 
-async def get_or_create_session_agent(session_id: str | None) -> Agent:
-    """Return a cached Strands Agent for this session, or build one.
+async def _create_agent_for_request(
+    model: Model | None,
+    messages: list[dict[str, Any]],
+) -> Agent:
+    return build_agent(
+        model=model,
+        messages=messages,
+        conversation_manager=_build_conversation_manager(),
+    )
 
-    Empty/None session_id falls back to a transient agent so unrelated callers
-    never share state. Existing sessions get the same Agent instance back, which
-    preserves Strands conversation memory and avoids re-running tool registration
-    on every request. The Agent is wired with FileSessionManager so multi-turn
-    history survives server restarts via the .strands-sessions/ directory.
-    """
-    if not session_id:
-        return build_agent()
-    async with _AGENT_CACHE_LOCK:
-        cached = _AGENT_CACHE.get(session_id)
-        if cached is not None:
-            return cached
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        session_manager = FileSessionManager(
-            session_id=session_id,
-            storage_dir=str(SESSIONS_DIR),
-        )
-        agent = build_agent(session_manager=session_manager)
-        _AGENT_CACHE[session_id] = agent
-        return agent
+
+
 
 
 def _parse_tool_input(tool_input: Any) -> object:
@@ -616,7 +610,7 @@ async def chat_endpoint(request: Request) -> StreamingResponse:
         len(prompt),
         session_id,
     )
-    session_agent = await get_or_create_session_agent(session_id)
+    session_agent = await _create_agent_for_request(None, prompt)
     return StreamingResponse(
         strands_to_aisdk_stream(prompt, session_agent),
         media_type="text/event-stream",

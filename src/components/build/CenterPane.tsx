@@ -1,5 +1,5 @@
-import { useMemo, useRef, useEffect, useState, type ReactNode } from 'react'
-import { getToolName, isToolUIPart, type FileUIPart, type UIMessage } from 'ai'
+import { useMemo, useRef, useEffect, type ReactNode } from 'react'
+import { type FileUIPart } from 'ai'
 import { ArrowTrendingUpIcon, BuildingOffice2Icon, UserIcon } from '@heroicons/react/24/outline'
 import { SparklesIcon } from '@heroicons/react/24/outline'
 import { ProviderThreadStateProvider } from '@/copilot/provider/ProviderThreadState'
@@ -14,8 +14,6 @@ import { ProviderPromptInput } from '@/components/provider/ProviderPromptInput'
 import { useBuildStore } from '@/stores/buildStore'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
-import { JSXPreview, JSXPreviewContent } from '@/components/ai-elements/jsx-preview'
-import { GEN_UI_COMPONENTS } from '@/components/ai-elements/jsxPreviewRegistry'
 import { TabAttachments } from '@/components/ai-elements/TabAttachment'
 import {
   Attachment,
@@ -24,9 +22,6 @@ import {
   AttachmentPreview,
 } from '@/components/ai-elements/attachments'
 import { StrandsChainOfThought } from '@/components/ai-elements/strands-chain-of-thought'
-import { StrandsMultiAgentWorkflow } from '@/components/ai-elements/strands-workflow'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { cn } from '@/utils/cn'
 import type {
   ProviderChatMessage,
@@ -48,218 +43,6 @@ function AssistantChrome({ children }: { children: ReactNode }) {
     </div>
   )
 }
-
-/**
- * Renders an assistant message's parts.
- * - Text parts: markdown or Gen-UI JSX
- * - Reasoning + tool parts: delegated to StrandsChainOfThought which maps
- *   each tool to its rich ai-elements component (browser, code, search, etc.)
- */
-function MessageParts({ message, isStreaming }: { message: ProviderChatMessage; isStreaming: boolean }) {
-  const hasTimeline = message.parts.some(
-    (p) => p.type === 'reasoning' || isToolUIPart(p)
-  )
-
-  return (
-    <div className="space-y-3">
-      {/* Render text parts inline */}
-      {message.parts.map((part, i) => {
-        // Skip tool and reasoning parts — handled by StrandsChainOfThought below
-        if (isToolUIPart(part) || part.type === 'reasoning') return null
-
-        switch (part.type) {
-          case 'text': {
-            const text = (part as { type: 'text'; text: string }).text
-            if (!text.trim()) return null
-            // Check if text contains JSX-like tags for Gen-UI rendering
-            const hasJsx = /<[A-Z][a-zA-Z]*[\s/>]/.test(text)
-            if (hasJsx) {
-              return (
-                <JSXPreview
-                  key={`${message.id}-${i}`}
-                  jsx={text}
-                  isStreaming={isStreaming}
-                  components={GEN_UI_COMPONENTS as unknown as Record<string, React.ComponentType<Record<string, unknown>>>}
-                >
-                  <JSXPreviewContent />
-                </JSXPreview>
-              )
-            }
-            return (
-              <div key={`${message.id}-${i}`} className="relative">
-                <div className="absolute -inset-1 rounded-[24px] bg-gradient-to-r from-[#3730A3]/12 via-[#6366F1]/5 to-transparent blur-xl" />
-                <div className="relative rounded-2xl border border-white/[0.06] bg-white/[0.02] px-5 py-4">
-                  <div className="prose prose-invert max-w-none prose-p:my-2 prose-pre:border prose-pre:border-white/[0.08] prose-pre:bg-[#050508] prose-headings:text-white prose-a:text-indigo-300">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            )
-          }
-          case 'step-start':
-            return i > 0 ? <hr key={`${message.id}-${i}`} className="border-white/[0.06]" /> : null
-          default:
-            return null
-        }
-      })}
-
-      {/* Rich chain-of-thought timeline: reasoning blocks, each tool mapped to its
-          dedicated ai-elements component (browser viewer, code blocks, search results,
-          sandbox, subagent inspector, HITL confirmation, etc.) */}
-      {hasTimeline && (
-        <StrandsChainOfThought message={message} isStreaming={isStreaming} />
-      )}
-    </div>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Subagent Workflow Extraction
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SUBAGENT_TOOL_NAMES = ['subagent', 'call_subagent', 'use_agent', 'agent_skills', 'skill']
-
-function isSubagentTool(toolName: string): boolean {
-  const lower = toolName.toLowerCase()
-  return SUBAGENT_TOOL_NAMES.some(name => lower.includes(name))
-}
-
-/**
- * Extract subagent orchestration data from the AI SDK message stream.
- * Builds React Flow nodes, edges, and per-node agent state for the 70/30 workflow.
- */
-function extractWorkflowData(messages: UIMessage[]) {
-  const nodes: Array<{ id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []
-  const edges: Array<{ id: string; source: string; target: string; animated?: boolean }> = []
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const agentsDataMap: Record<string, any> = {}
-  const seenAgents = new Set<string>()
-  let subagentCount = 0
-
-  // Always add the orchestrator node
-  nodes.push({
-    id: 'orchestrator',
-    type: 'agentNode',
-    position: { x: 250, y: 30 },
-    data: { agentName: 'Orchestrator', role: 'Primary Agent', status: 'Active' },
-  })
-  agentsDataMap['orchestrator'] = {
-    agentName: 'Orchestrator',
-    model: 'grok-4.20',
-    systemPrompt: 'Root agent coordinating subagent execution.',
-    events: [],
-  }
-
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue
-    for (const part of msg.parts) {
-      if (!isToolUIPart(part)) continue
-      const toolName = getToolName(part)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const args = (part.input || {}) as Record<string, any>
-      const state = part.state
-      const isComplete = state === 'output-available' || state === 'output-error'
-
-      if (isSubagentTool(toolName)) {
-        const agentName = args.agent_name || args.name || toolName
-        const agentId = `subagent-${agentName}`
-
-        if (!seenAgents.has(agentId)) {
-          seenAgents.add(agentId)
-          subagentCount++
-          const col = subagentCount % 3
-          const row = Math.floor((subagentCount - 1) / 3)
-
-          nodes.push({
-            id: agentId,
-            type: 'agentNode',
-            position: { x: 80 + col * 220, y: 160 + row * 140 },
-            data: {
-              agentName,
-              role: args.role || 'Subagent',
-              status: isComplete ? 'Complete' : 'Running',
-            },
-          })
-
-          edges.push({
-            id: `edge-orchestrator-${agentId}`,
-            source: 'orchestrator',
-            target: agentId,
-            animated: !isComplete,
-          })
-
-          agentsDataMap[agentId] = {
-            agentName,
-            model: args.model || 'default-model',
-            systemPrompt: args.instructions || args.system_prompt || 'Executing delegated task.',
-            events: [],
-          }
-        }
-
-        // Record the event
-        agentsDataMap[agentId]?.events?.push({
-          type: 'tool',
-          toolName,
-          status: isComplete ? 'complete' : 'active',
-        })
-      } else {
-        // Non-subagent tool calls are logged on the orchestrator
-        agentsDataMap['orchestrator']?.events?.push({
-          type: 'tool',
-          toolName,
-          status: isComplete ? 'complete' : 'active',
-        })
-      }
-    }
-
-    // Collect reasoning events for orchestrator
-    for (const part of msg.parts) {
-      if (part.type === 'reasoning') {
-        agentsDataMap['orchestrator']?.events?.push({
-          type: 'reasoning',
-          text: part.text?.slice(0, 120) + (part.text && part.text.length > 120 ? '...' : ''),
-        })
-      }
-    }
-  }
-
-  return { nodes, edges, agentsDataMap, hasSubagents: seenAgents.size > 0 }
-}
-
-function WorkflowPanel({ messages }: { messages: UIMessage[] }) {
-  const { nodes, edges, agentsDataMap, hasSubagents } = useMemo(
-    () => extractWorkflowData(messages),
-    [messages]
-  )
-  const [isExpanded, setIsExpanded] = useState(true)
-
-  if (!hasSubagents) return null
-
-  return (
-    <div className="border-b border-white/[0.06]">
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="flex w-full items-center gap-2 px-6 py-3 text-left text-xs uppercase tracking-[0.18em] text-white/42 hover:text-white/60 transition-colors"
-      >
-        <span className={cn('transition-transform', isExpanded ? 'rotate-90' : '')}>▸</span>
-        <span>Multi-Agent Workflow ({nodes.length - 1} subagents)</span>
-      </button>
-      {isExpanded && (
-        <div className="px-4 pb-4">
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
-            <StrandsMultiAgentWorkflow
-              nodes={nodes}
-              edges={edges}
-              agentsDataMap={agentsDataMap}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 function getProviderMessageMetadata(metadata: unknown): ProviderMessageMetadata | undefined {
   if (!metadata || typeof metadata !== 'object') {
@@ -404,9 +187,6 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
       isRunning={isStreaming}
     >
       <div className="flex h-full flex-col">
-        {/* 70/30 Multi-Agent Workflow panel — renders when subagent orchestration is detected */}
-        <WorkflowPanel messages={messages} />
-
         <div
           ref={scrollRef}
           className={cn(
@@ -421,7 +201,7 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
                   <UserMessage message={message} />
                 ) : message.role === 'assistant' ? (
                   <AssistantChrome>
-                    <MessageParts message={message} isStreaming={isStreaming} />
+                    <StrandsChainOfThought message={message} isStreaming={isStreaming} />
                   </AssistantChrome>
                 ) : null}
               </div>

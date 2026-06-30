@@ -24,9 +24,7 @@ class BuildAgentTests(unittest.TestCase):
         self.assertNotIn("callback_handler", built)
         self.assertNotIn("hooks", built)
         self.assertNotIn("plugins", built)
-        self.assertNotIn("retry_strategy", built)
         self.assertNotIn("tool_executor", built)
-        self.assertNotIn("conversation_manager", built)
         self.assertNotIn("session_manager", built)
 
 
@@ -325,7 +323,7 @@ class ChatEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "data: [DONE]\n\n")
-        build_agent.assert_called_once_with()
+        build_agent.assert_called_once()
         self.assertEqual(
             captured["prompt"],
             [

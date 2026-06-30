@@ -15,6 +15,7 @@
   "dependencies": {
     "@ai-sdk/react": "^3.0.148",
     "@ai-sdk/ui-utils": "^1.2.11",
+    "@fontsource-variable/fraunces": "^5.2.9",
     "@fontsource-variable/geist": "^5.2.8",
     "@heroicons/react": "^2.2.0",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
