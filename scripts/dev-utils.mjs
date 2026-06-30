@@ -45,6 +45,86 @@ export function getProjectPids(ownPid) {
   return [...pids]
 }
 
+export function pidsOnPort(port) {
+  const pids = new Set()
+  try {
+    const out = execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf8', timeout: 3000 })
+    for (const line of out.trim().split(/\r?\n/)) {
+      const pid = Number.parseInt(line.trim(), 10)
+      if (Number.isInteger(pid) && pid > 0) {
+        pids.add(pid)
+      }
+    }
+  } catch {
+    // lsof missing or no listener; fall back to ss with process info.
+    try {
+      const out = execFileSync('ss', ['-tlnpH', `sport = :${port}`], { encoding: 'utf8', timeout: 3000 })
+      const re = /pid=(\d+)/g
+      let match
+      while ((match = re.exec(out)) !== null) {
+        const pid = Number.parseInt(match[1], 10)
+        if (Number.isInteger(pid) && pid > 0) {
+          pids.add(pid)
+        }
+      }
+    } catch {
+      // No process info available; nothing to kill.
+    }
+  }
+  return [...pids]
+}
+
+export function killProcessesOnPorts(ports, ownPid = process.pid) {
+  const pids = new Set()
+  for (const port of ports) {
+    for (const pid of pidsOnPort(port)) {
+      if (pid !== ownPid) {
+        pids.add(pid)
+      }
+    }
+  }
+  const targets = [...pids]
+  if (targets.length === 0) {
+    return false
+  }
+  console.log(`[dev] killing ${targets.length} process(es) bound to project ports: ${targets.join(', ')}`)
+  for (const pid of targets) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // already gone
+    }
+  }
+  const deadline = Date.now() + 5000
+  let remaining = targets.filter((pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  })
+  while (remaining.length > 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+    remaining = remaining.filter((pid) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    })
+  }
+  for (const pid of remaining) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // already gone
+    }
+  }
+  return true
+}
+
 export function killExistingProjectProcesses(ownPid = process.pid) {
   const pids = getProjectPids(ownPid)
   if (pids.length === 0) {
@@ -117,6 +197,10 @@ export function projectPorts() {
 
 export function optionalPorts() {
   return [...OPTIONAL_PORTS]
+}
+
+export function allProjectPorts() {
+  return [...PROJECT_PORTS, ...OPTIONAL_PORTS]
 }
 
 export function runProjectCheck() {
