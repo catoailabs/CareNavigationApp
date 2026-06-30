@@ -26,6 +26,8 @@ dist-ssr
 /deploy/.env
 __pycache__/
 .venv*/
+# Python virtual environment (no leading dot) — multi-GB CUDA/torch libs, never commit.
+venv/
 .strands-sessions/
 .runtime/
 test.db
@@ -34,6 +36,8 @@ test.db
 # guidelines_vector_store.faiss is 2.8 GB and guidelines_vector_store.records.jsonl
 # is 504 MB; both exceed GitHub's 100 MB push limit.
 data/runtime/
+# Large generated vector-store checkpoint (>100 MB) under src/data/runtime.
+src/data/runtime/*.checkpoint/
 
 # Local dev tenant-environment store (per-uid, encrypted) and its auto-generated
 # Fernet key. Never committed — contains local tenant data and the dev key.
