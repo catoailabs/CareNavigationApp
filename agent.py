@@ -121,6 +121,10 @@ def build_baseline_tools(session_id: str | None = None) -> list[Any]:
 DEFAULT_AGENT_ID = "provider-research-agent"
 DEFAULT_MODEL_ID = "grok-4.3"
 SUPPORTED_DOCUMENT_FORMATS = {"pdf", "csv", "doc", "docx", "xls", "xlsx", "html", "txt", "md"}
+# Document formats whose bytes are UTF-8 text and are therefore inlined as a
+# ``text`` content block (see _file_part_to_content_block) so they survive the
+# xAI/Grok provider, which drops ``document`` blocks on user messages.
+TEXT_DOCUMENT_FORMATS = {"txt", "md", "csv", "html"}
 DOCUMENT_MEDIA_TYPE_TO_FORMAT = {
     "application/msword": "doc",
     "application/pdf": "pdf",
@@ -475,6 +479,24 @@ def _file_part_to_content_block(part: dict[str, Any]) -> dict[str, Any] | None:
         return {"image": {"format": image_format, "source": {"bytes": raw_bytes}}}
 
     document_format = _guess_document_format(filename, effective_media_type)
+
+    # Text-based attachments (.txt/.md/.csv/.html and any ``text/*`` media type)
+    # are INLINED as a ``text`` content block rather than wrapped in a Bedrock-style
+    # ``document`` block. This is deliberate: the xAI/Grok provider (and other
+    # OpenAI-compatible providers) only serialize ``text`` / ``image`` / ``toolResult``
+    # blocks for user messages and SILENTLY DROP ``document`` blocks
+    # (see strands_xai.xAIModel._append_messages_to_chat), so a document block would
+    # never reach the model — pasted .txt files would vanish. Inlining the decoded
+    # text guarantees the agent can actually read the file and is the correct,
+    # provider-agnostic representation for textual content.
+    is_text_attachment = (
+        effective_media_type.startswith("text/")
+        or document_format in TEXT_DOCUMENT_FORMATS
+    )
+    if is_text_attachment:
+        text = raw_bytes.decode("utf-8", errors="replace")
+        return {"text": f"[Attached file: {filename}]\n\n{text}"}
+
     if document_format is not None:
         return {
             "document": {

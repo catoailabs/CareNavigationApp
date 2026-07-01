@@ -96,6 +96,77 @@ class UIMessageConversionTests(unittest.TestCase):
             ],
         )
 
+    def test_text_attachments_are_inlined_as_text_blocks(self) -> None:
+        # A pasted .txt file arrives as a v6 file part with a base64 data URL.
+        # "SGVsbG8sIHByb3ZpZGVyIQ==" decodes to "Hello, provider!".
+        converted = agent.ui_messages_to_agent_input(
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "type": "file",
+                            "mediaType": "text/plain",
+                            "filename": "notes.txt",
+                            "url": "data:text/plain;base64,SGVsbG8sIHByb3ZpZGVyIQ==",
+                        },
+                        {"type": "text", "text": "Summarize this."},
+                    ],
+                }
+            ]
+        )
+
+        # The text file must be inlined as a text block (NOT a document block),
+        # because the xAI/Grok provider silently drops document blocks.
+        self.assertEqual(
+            converted,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": "[Attached file: notes.txt]\n\nHello, provider!"},
+                        {"text": "Summarize this."},
+                    ],
+                }
+            ],
+        )
+
+    def test_binary_document_attachments_remain_document_blocks(self) -> None:
+        # PDFs are binary and cannot be inlined as text; they stay document blocks.
+        converted = agent.ui_messages_to_agent_input(
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "type": "file",
+                            "mediaType": "application/pdf",
+                            "filename": "report.pdf",
+                            "url": "data:application/pdf;base64,JVBERg==",
+                        }
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(
+            converted,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "document": {
+                                "format": "pdf",
+                                "name": "report.pdf",
+                                "source": {"bytes": b"%PDF"},
+                            }
+                        }
+                    ],
+                }
+            ],
+        )
+
     def test_legacy_content_fallback_still_works(self) -> None:
         converted = agent.ui_messages_to_agent_input(
             [
