@@ -96,7 +96,6 @@ agent.tool.file_read(
 See the file_read function docstring for more details on modes and parameters.
 """
 
-import glob
 import json
 import os
 import time as time_module
@@ -119,6 +118,7 @@ from strands.types.tools import (
     ToolUse,
 )
 
+from strands_tools.devops import container_fs
 from strands_tools.utils import console_util
 from strands_tools.utils.detect_language import detect_language
 
@@ -188,9 +188,8 @@ def create_document_block(
             name_uuid = str(uuid.uuid4())[:8]
             neutral_name = f"{os.path.splitext(base_name)[0]}-{name_uuid}"
 
-        # Read file content
-        with open(file_path, "rb") as f:
-            content = f.read()
+        # Read file content (from inside the virtual desktop container)
+        content = container_fs.read_bytes(file_path)
 
         # Create document block
         return {"name": neutral_name, "format": format, "source": {"bytes": content}}
@@ -365,7 +364,7 @@ TOOL_SPEC = {
 
 def find_files(console: Console, pattern: str, recursive: bool = True) -> List[str]:
     """
-    Find files matching the pattern with better error handling.
+    Find files matching the pattern inside the virtual desktop container.
 
     Supports glob patterns, direct file paths, and directory traversal
     with configurable recursion for finding matching files.
@@ -375,49 +374,12 @@ def find_files(console: Console, pattern: str, recursive: bool = True) -> List[s
         recursive: Whether to search recursively through subdirectories
 
     Returns:
-        List[str]: List of matching file paths
+        List[str]: List of matching file paths (inside the container)
     """
     try:
-        # Consistent path normalization
+        # Consistent path normalization (string-only; resolution happens in-container)
         pattern = expanduser(pattern)
-
-        # Direct file/directory check first
-        if os.path.exists(pattern):
-            if os.path.isfile(pattern):
-                return [pattern]
-            elif os.path.isdir(pattern):
-                matching_files = []
-
-                for root, _dirs, files in os.walk(pattern):
-                    if not recursive and root != pattern:
-                        continue
-
-                    for file in sorted(files):
-                        if not file.startswith("."):  # Skip hidden files
-                            matching_files.append(os.path.join(root, file))
-
-                return sorted(matching_files)
-
-        # Handle glob patterns
-        if recursive and "**" not in pattern:
-            # Add recursive glob pattern
-            base_dir = os.path.dirname(pattern)
-            file_pattern = os.path.basename(pattern)
-            pattern = os.path.join(base_dir if base_dir else ".", "**", file_pattern)
-
-        try:
-            matching_files = glob.glob(pattern, recursive=recursive)
-            return sorted(matching_files)
-        except Exception as e:
-            console.print(
-                Panel(
-                    escape(f"Warning: Error while globbing {pattern}: {e}"),
-                    title="[yellow]Warning",
-                    border_style="yellow",
-                )
-            )
-            return []
-
+        return container_fs.find_files(pattern, recursive=recursive)
     except Exception as e:
         console.print(Panel(escape(f"Error in find_files: {str(e)}"), title="[red]Error", border_style="red"))
         return []
@@ -470,20 +432,15 @@ def get_file_stats(console, file_path: str) -> Dict[str, Any]:
                         size_human (formatted size), and preview
     """
     file_path = expanduser(file_path)
+    file_content = container_fs.read_text(file_path)
+    all_lines = file_content.splitlines(keepends=True)
     stats: Dict[str, Any] = {
-        "size_bytes": os.path.getsize(file_path),
-        "line_count": 0,
+        "size_bytes": container_fs.getsize(file_path),
+        "line_count": len(all_lines),
         "preview": "",
     }
 
-    with open(file_path, "r") as f:
-        preview_lines = []
-        for i, line in enumerate(f):
-            stats["line_count"] += 1
-            if i < 50:  # First 50 lines as preview
-                preview_lines.append(line)
-
-    stats["preview"] = "\n".join(preview_lines)
+    stats["preview"] = "\n".join(all_lines[:50])  # First 50 lines as preview
     stats["size_human"] = f"{stats['size_bytes'] / 1024:.2f} KB"
 
     table = Table(title="File Statistics", box=box.DOUBLE)
@@ -519,15 +476,14 @@ def read_file_lines(console: Console, file_path: str, start_line: int = 0, end_l
     """
     file_path = expanduser(file_path)
 
-    if not os.path.exists(file_path):
+    if not container_fs.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    if not os.path.isfile(file_path):
+    if not container_fs.is_file(file_path):
         raise ValueError(f"Path is not a file: {file_path}")
 
     try:
-        with open(file_path, "r") as f:
-            all_lines = f.readlines()
+        all_lines = container_fs.read_text(file_path).splitlines(keepends=True)
 
         # Validate line numbers
         start_line = max(start_line, 0)
@@ -577,23 +533,22 @@ def read_file_chunk(console: Console, file_path: str, chunk_size: int, chunk_off
     """
     file_path = expanduser(file_path)
 
-    if not os.path.exists(file_path):
+    if not container_fs.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    if not os.path.isfile(file_path):
+    if not container_fs.is_file(file_path):
         raise ValueError(f"Path is not a file: {file_path}")
 
     try:
-        file_size = os.path.getsize(file_path)
+        raw = container_fs.read_bytes(file_path)
+        file_size = len(raw)
         if chunk_offset < 0 or chunk_offset > file_size:
             raise ValueError(f"Invalid chunk_offset: {chunk_offset}. File size is {file_size} bytes.")
 
         if chunk_size < 0:
             raise ValueError(f"Invalid chunk_size: {chunk_size}")
 
-        with open(file_path, "r") as f:
-            f.seek(chunk_offset)
-            content = f.read(chunk_size)
+        content = raw[chunk_offset : chunk_offset + chunk_size].decode("utf-8", "replace")
 
         # Create information panel
         file_name = os.path.basename(file_path)
@@ -655,10 +610,10 @@ def search_file(console: Console, file_path: str, pattern: str, context_lines: i
     """
     file_path = expanduser(file_path)
 
-    if not os.path.exists(file_path):
+    if not container_fs.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    if not os.path.isfile(file_path):
+    if not container_fs.is_file(file_path):
         raise ValueError(f"Path is not a file: {file_path}")
 
     if not pattern:
@@ -666,8 +621,7 @@ def search_file(console: Console, file_path: str, pattern: str, context_lines: i
 
     results = []
     try:
-        with open(file_path, "r") as f:
-            lines = f.readlines()
+        lines = container_fs.read_text(file_path).splitlines(keepends=True)
 
         total_matches = 0
         for i, line in enumerate(lines):
@@ -746,23 +700,21 @@ def create_diff(file_path: str, comparison_path: str, diff_type: str = "unified"
     """
     try:
         import difflib
-        from pathlib import Path
 
         file_path = expanduser(file_path)
         comparison_path = expanduser(comparison_path)
 
-        # Function to read file content
+        # Function to read file content (from inside the container)
         def read_file(path: str) -> List[str]:
-            with open(path, "r", encoding="utf-8") as f:
-                return f.readlines()
+            return container_fs.read_text(path).splitlines(keepends=True)
 
         # Handle directory comparison
-        if os.path.isdir(file_path) and os.path.isdir(comparison_path):
+        if container_fs.is_dir(file_path) and container_fs.is_dir(comparison_path):
             diff_results = []
 
-            # Get all files in both directories
+            # Get all files in both directories (relative paths), resolved in-container
             def get_files(path: str) -> set:
-                return set(str(p.relative_to(path)) for p in Path(path).rglob("*") if p.is_file())
+                return set(os.path.relpath(p, path) for p in container_fs.find_files(path, recursive=True))
 
             files1 = get_files(file_path)
             files2 = get_files(comparison_path)
@@ -786,7 +738,7 @@ def create_diff(file_path: str, comparison_path: str, diff_type: str = "unified"
             return "\n".join(diff_results)
 
         # Handle single file comparison
-        elif os.path.isfile(file_path) and os.path.isfile(comparison_path):
+        elif container_fs.is_file(file_path) and container_fs.is_file(comparison_path):
             lines1 = read_file(file_path)
             lines2 = read_file(comparison_path)
 
@@ -828,24 +780,19 @@ def time_machine_view(file_path: str, use_git: bool = True, num_revisions: int =
         file_path = os.path.expanduser(file_path)
 
         if use_git:
-            import subprocess
-
-            # Check if file is in a git repository
-            try:
-                repo_root = subprocess.check_output(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    cwd=os.path.dirname(file_path),
-                    stderr=subprocess.PIPE,
-                    text=True,
-                ).strip()
-            except subprocess.CalledProcessError:
-                raise ValueError("File is not in a git repository") from None
+            # Check if file is in a git repository (inside the container)
+            rc, out, _err = container_fs.run(
+                ["git", "rev-parse", "--show-toplevel"], cwd=os.path.dirname(file_path)
+            )
+            if rc != 0:
+                raise ValueError("File is not in a git repository")
+            repo_root = out.strip()
 
             # Get relative path from repo root
             rel_path = os.path.relpath(file_path, repo_root)
 
             # Get git log
-            log_output = subprocess.check_output(
+            rc, log_out, _err = container_fs.run(
                 [
                     "git",
                     "log",
@@ -856,11 +803,11 @@ def time_machine_view(file_path: str, use_git: bool = True, num_revisions: int =
                     rel_path,
                 ],
                 cwd=repo_root,
-                text=True,
-            ).split("\n")
+            )
+            log_output = log_out.split("\n")
 
             # Get blame information
-            subprocess.check_output(["git", "blame", "--line-porcelain", rel_path], cwd=repo_root, text=True)
+            container_fs.run(["git", "blame", "--line-porcelain", rel_path], cwd=repo_root)
 
             # Process git information
             history = []
@@ -874,21 +821,19 @@ def time_machine_view(file_path: str, use_git: bool = True, num_revisions: int =
                         current_commit = commit_hash
 
                     # Get changes in this commit
-                    try:
-                        changes = subprocess.check_output(
-                            [
-                                "git",
-                                "show",
-                                "--format=",
-                                "--patch",
-                                commit_hash,
-                                "--",
-                                rel_path,
-                            ],
-                            cwd=repo_root,
-                            text=True,
-                        )
-                    except subprocess.CalledProcessError:
+                    rc, changes, _err = container_fs.run(
+                        [
+                            "git",
+                            "show",
+                            "--format=",
+                            "--patch",
+                            commit_hash,
+                            "--",
+                            rel_path,
+                        ],
+                        cwd=repo_root,
+                    )
+                    if rc != 0:
                         changes = "Unable to retrieve changes"
 
                     history.append(
@@ -918,17 +863,17 @@ def time_machine_view(file_path: str, use_git: bool = True, num_revisions: int =
             return "\n".join(output)
 
         else:
-            # Fallback to filesystem metadata
-            stat = os.stat(file_path)
+            # Fallback to filesystem metadata (inside the container)
+            stat = container_fs.stat(file_path)
 
             output = []
             output.append(f"=== File Information for {os.path.basename(file_path)} ===\n")
-            output.append(f"Created: {time_module.ctime(stat.st_ctime)}")
-            output.append(f"Modified: {time_module.ctime(stat.st_mtime)}")
-            output.append(f"Accessed: {time_module.ctime(stat.st_atime)}")
-            output.append(f"Size: {stat.st_size:,} bytes")
-            output.append(f"Owner: {stat.st_uid}")
-            output.append(f"Permissions: {oct(stat.st_mode)[-3:]}")
+            output.append(f"Created: {time_module.ctime(stat['st_ctime'])}")
+            output.append(f"Modified: {time_module.ctime(stat['st_mtime'])}")
+            output.append(f"Accessed: {time_module.ctime(stat['st_atime'])}")
+            output.append(f"Size: {stat['st_size']:,} bytes")
+            output.append(f"Owner: {stat['st_uid']}")
+            output.append(f"Permissions: {oct(stat['st_mode'])[-3:]}")
 
             return "\n".join(output)
 
@@ -1128,7 +1073,7 @@ def file_read(tool: ToolUse, **kwargs: Any) -> ToolResult:
                             {
                                 "path": fp,
                                 "name": os.path.basename(fp),
-                                "type": "folder" if os.path.isdir(fp) else "file",
+                                "type": "folder" if container_fs.is_dir(fp) else "file",
                             }
                             for fp in matching_files
                         ],
@@ -1141,8 +1086,7 @@ def file_read(tool: ToolUse, **kwargs: Any) -> ToolResult:
             try:
                 if mode == "view":
                     try:
-                        with open(file_path, "r") as f:
-                            content = f.read()
+                        content = container_fs.read_text(file_path)
 
                         # Create rich panel with syntax highlighting
                         view_panel = create_rich_panel(
@@ -1171,8 +1115,7 @@ def file_read(tool: ToolUse, **kwargs: Any) -> ToolResult:
 
                 elif mode == "preview":
                     stats = get_file_stats(console, file_path)
-                    with open(file_path, "r") as f:
-                        content = "".join(f.readlines()[:50])
+                    content = "".join(container_fs.read_text(file_path).splitlines(keepends=True)[:50])
 
                     preview_panel = create_rich_panel(
                         content,

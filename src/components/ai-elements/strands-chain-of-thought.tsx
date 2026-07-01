@@ -140,6 +140,21 @@ import {
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "./tool";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "./sources";
 import {
+  InlineCitation,
+  InlineCitationCard,
+  InlineCitationCardBody,
+  InlineCitationCardTrigger,
+  InlineCitationCarousel,
+  InlineCitationCarouselContent,
+  InlineCitationCarouselHeader,
+  InlineCitationCarouselIndex,
+  InlineCitationCarouselItem,
+  InlineCitationCarouselNext,
+  InlineCitationCarouselPrev,
+  InlineCitationSource,
+  InlineCitationText,
+} from "./inline-citation";
+import {
   RunProjectPreview,
   WebPreview,
   WebPreviewBody,
@@ -374,6 +389,121 @@ function normalizeSources(raw: unknown): SearchSource[] {
     .filter((item): item is SearchSource => item !== null);
 }
 
+// The backend (agent.py::_parse_tool_output) emits a tool's output as a *list of
+// content blocks*. Strands serializes a dict-returning tool (perplexity_*) into a
+// single `{ text: "<JSON string>" }` block, so `part.output` arrives as
+// `[{ text: "{...}" }]`. Unwrap the list and JSON.parse the text to recover the
+// structured payload the tool actually returned.
+function unwrapToolOutput(output: unknown): unknown {
+  let value: unknown = output;
+  if (Array.isArray(value)) {
+    value =
+      value.length === 1
+        ? value[0]
+        : value.find(
+            (block) =>
+              block && typeof block === "object" && "text" in (block as object)
+          ) ?? value[0];
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).text === "string"
+  ) {
+    const text = ((value as Record<string, unknown>).text as string).trim();
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return value;
+}
+
+interface PerplexityMedia {
+  url: string;
+  source_url?: string;
+}
+
+// Flatten the Perplexity payload's ranked sources into SearchSource[]. Handles
+// every shape the two perplexity tools can produce: the prebuilt
+// `__ui_data__.data.results`, the grouped `results[].results[]`, a flat
+// `results[]`, or bare `citations` (deep_research).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function flattenPerplexityResults(payload: any): SearchSource[] {
+  const ui = payload?.__ui_data__?.data?.results;
+  if (Array.isArray(ui) && ui.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ui.map((r: any) => ({
+      url: r?.url,
+      title: r?.title,
+      snippet: r?.snippet,
+    }));
+  }
+  const groups = payload?.results;
+  if (Array.isArray(groups) && groups.length > 0) {
+    const first = groups[0];
+    if (first && typeof first === "object" && Array.isArray(first.results)) {
+      return groups.flatMap(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (group: any) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (Array.isArray(group?.results) ? group.results : []).map((r: any) => ({
+            url: r?.url,
+            title: r?.title,
+            snippet: r?.snippet,
+          }))
+      );
+    }
+    if (first && (first.url || first.link)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return groups.map((r: any) => ({
+        url: r?.url || r?.link,
+        title: r?.title,
+        snippet: r?.snippet,
+      }));
+    }
+  }
+  if (Array.isArray(payload?.citations)) {
+    return normalizeSources(payload.citations);
+  }
+  return [];
+}
+
+// Collect every synthesized image: the flat `images[]` plus any per-result
+// `images[]` attached during media enrichment. Deduped by URL.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectPerplexityImages(payload: any): PerplexityMedia[] {
+  const collected: PerplexityMedia[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const push = (arr: any) => {
+    if (!Array.isArray(arr)) return;
+    for (const media of arr) {
+      if (media && typeof media === "object" && typeof media.url === "string") {
+        collected.push(media as PerplexityMedia);
+      }
+    }
+  };
+  push(payload?.images);
+  const groups = payload?.results;
+  if (Array.isArray(groups)) {
+    for (const group of groups) {
+      const items = Array.isArray(group?.results)
+        ? group.results
+        : group?.url
+          ? [group]
+          : [];
+      for (const item of items) push(item?.images);
+    }
+  }
+  const seen = new Set<string>();
+  return collected.filter((media) =>
+    seen.has(media.url) ? false : (seen.add(media.url), true)
+  );
+}
+
 function SearchSourceItem({ src, index }: { src: SearchSource; index: number }) {
   const url = getSourceUrl(src);
   const title = getSourceTitle(src);
@@ -536,6 +666,167 @@ function SearchTool({
           <div className="mt-1 text-xs text-muted-foreground">
             Search completed.
           </div>
+        )}
+      </div>
+    </ChainOfThoughtStep>
+  );
+}
+
+// Renders the Perplexity results as a single inline citation: a hoverable pill
+// (hostname + count) whose card carousel shows each ranked source with its
+// title, URL, and snippet — the rich per-result data the Perplexity payload
+// carries. This is the "inline citations for Perplexity" mapping.
+function PerplexityInlineCitations({
+  query,
+  sources,
+}: {
+  query: string;
+  sources: SearchSource[];
+}) {
+  const urls = sources
+    .map((src) => getSourceUrl(src))
+    .filter(
+      (url): url is string => typeof url === "string" && /^https?:\/\//.test(url)
+    );
+  if (urls.length === 0) return null;
+
+  return (
+    <p className="text-muted-foreground text-sm">
+      <InlineCitationText>
+        Retrieved {sources.length} source{sources.length === 1 ? "" : "s"}
+        {query ? ` for \u201c${query}\u201d` : ""}
+      </InlineCitationText>
+      <InlineCitation>
+        <InlineCitationCard>
+          <InlineCitationCardTrigger sources={urls} />
+          <InlineCitationCardBody>
+            <InlineCitationCarousel>
+              <InlineCitationCarouselHeader>
+                <InlineCitationCarouselPrev />
+                <InlineCitationCarouselNext />
+                <InlineCitationCarouselIndex />
+              </InlineCitationCarouselHeader>
+              <InlineCitationCarouselContent>
+                {sources.map((src, i) => {
+                  const snippet = getSourceSnippet(src);
+                  return (
+                    <InlineCitationCarouselItem
+                      key={`${getSourceUrl(src) ?? "src"}-${i}`}
+                    >
+                      <InlineCitationSource
+                        description={
+                          snippet
+                            ? snippet.length > 220
+                              ? `${snippet.slice(0, 220)}\u2026`
+                              : snippet
+                            : undefined
+                        }
+                        title={getSourceTitle(src)}
+                        url={getSourceUrl(src)}
+                      />
+                    </InlineCitationCarouselItem>
+                  );
+                })}
+              </InlineCitationCarouselContent>
+            </InlineCitationCarousel>
+          </InlineCitationCardBody>
+        </InlineCitationCard>
+      </InlineCitation>
+    </p>
+  );
+}
+
+// Dedicated renderer for the Perplexity Search API tools. Maps the tool's
+// structured payload onto canonical Chain-of-Thought primitives:
+//   • the search call            -> ChainOfThoughtStep
+//   • the tool's chain_of_thought -> nested ChainOfThoughtStep(s)
+//   • the ranked results          -> ChainOfThoughtSearchResults / …SearchResult
+//   • synthesized media           -> ChainOfThoughtImage
+// (Grok's native citations map to the Citations element separately — deferred.)
+function PerplexitySearchTool({
+  toolName,
+  args,
+  payload,
+  isComplete,
+}: {
+  toolName: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>;
+  payload: unknown;
+  isComplete: boolean;
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, any>;
+
+  const rawQuery =
+    (typeof data.query === "string" && data.query) ||
+    (Array.isArray(data.query) && data.query.join(", ")) ||
+    args.query ||
+    (Array.isArray(args.queries) ? args.queries.join(", ") : "") ||
+    "";
+  const query =
+    rawQuery.length > 96 ? `${rawQuery.slice(0, 96)}\u2026` : rawQuery;
+
+  const sources = flattenPerplexityResults(data);
+  const images = collectPerplexityImages(data);
+  const steps = Array.isArray(data.chain_of_thought) ? data.chain_of_thought : [];
+
+  return (
+    <ChainOfThoughtStep
+      icon={SearchIcon}
+      label={query ? `Searched: ${query}` : `Search: ${toolName}`}
+      status={isComplete ? "complete" : "active"}
+    >
+      <div className="mt-2 ml-1 space-y-3">
+        {steps.length > 0 && (
+          <div className="space-y-2">
+            {steps.map(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (step: any, i: number) => (
+                <ChainOfThoughtStep
+                  description={step?.description}
+                  key={`cot-${i}`}
+                  label={step?.label ?? "Step"}
+                  status={step?.status === "pending" ? "pending" : "complete"}
+                >
+                  {Array.isArray(step?.sources) && step.sources.length > 0 && (
+                    <ChainOfThoughtSearchResults className="mt-1">
+                      {step.sources.map((domain: string, j: number) => (
+                        <ChainOfThoughtSearchResult key={j}>
+                          {String(domain)}
+                        </ChainOfThoughtSearchResult>
+                      ))}
+                    </ChainOfThoughtSearchResults>
+                  )}
+                </ChainOfThoughtStep>
+              )
+            )}
+          </div>
+        )}
+
+        {isComplete && sources.length > 0 && (
+          <PerplexityInlineCitations query={query} sources={sources} />
+        )}
+
+        {isComplete && images.length > 0 && (
+          <div className="space-y-2">
+            {images.slice(0, 6).map((media, i) => (
+              <ChainOfThoughtImage
+                caption={getDomain(media.source_url)}
+                key={`img-${i}`}
+              >
+                <img
+                  alt="Search result media"
+                  className="max-h-full max-w-full rounded-md object-contain"
+                  src={media.url}
+                />
+              </ChainOfThoughtImage>
+            ))}
+          </div>
+        )}
+
+        {isComplete && sources.length === 0 && images.length === 0 && (
+          <div className="text-xs text-muted-foreground">Search completed.</div>
         )}
       </div>
     </ChainOfThoughtStep>
@@ -1225,6 +1516,17 @@ function ToolStep({
     return <SubagentTool args={args} isComplete={isComplete} toolName={toolName} />;
   }
 
+  if (toolName.toLowerCase().includes("perplexity")) {
+    return (
+      <PerplexitySearchTool
+        args={args}
+        isComplete={isComplete}
+        payload={unwrapToolOutput(part.output)}
+        toolName={toolName}
+      />
+    );
+  }
+
   const isSearchTool =
     isToolNameMatch(toolName, SEARCH_TOOL_NAMES) ||
     (isComplete &&
@@ -1352,41 +1654,43 @@ function ReasoningStep({
   );
 }
 
-function SourceDocuments({
+function MessageSources({
   parts,
 }: {
   parts: SourceUrlUIPart[];
 }) {
-  const sources = useMemo(
-    () =>
-      parts.map(
-        (part): SearchSource => ({
-          url: part.url,
-          title: part.title,
-        })
-      ),
-    [parts]
-  );
+  const sources = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { url: string; title?: string }[] = [];
+    for (const part of parts) {
+      if (!part.url || seen.has(part.url)) continue;
+      seen.add(part.url);
+      out.push({ url: part.url, title: part.title });
+    }
+    return out;
+  }, [parts]);
+
+  if (sources.length === 0) return null;
 
   return (
-    <ChainOfThoughtStep icon={BookIcon} label="Sources" status="complete">
-      <Sources className="mt-2 ml-1">
-        <SourcesTrigger count={sources.length} />
-        <SourcesContent>
-          {sources.map((src, i) => (
-            <Source key={i} href={src.url} title={src.title || src.url}>
-              <BookIcon className="h-4 w-4" />
-              <span className="block font-medium">{src.title || src.url}</span>
-              {src.url && (
-                <span className="text-muted-foreground text-[10px]">
-                  {getDomain(src.url)}
-                </span>
-              )}
-            </Source>
-          ))}
-        </SourcesContent>
-      </Sources>
-    </ChainOfThoughtStep>
+    <Sources className="mt-1">
+      <SourcesTrigger count={sources.length} />
+      <SourcesContent>
+        {sources.map((src, i) => (
+          <Source href={src.url} key={i} title={src.title || src.url}>
+            <BookIcon className="h-4 w-4 shrink-0" />
+            <span className="flex flex-col">
+              <span className="font-medium">
+                {src.title || getDomain(src.url)}
+              </span>
+              <span className="text-muted-foreground text-[10px]">
+                {getDomain(src.url)}
+              </span>
+            </span>
+          </Source>
+        ))}
+      </SourcesContent>
+    </Sources>
   );
 }
 
@@ -1485,6 +1789,7 @@ export function StrandsChainOfThought({
   const fileParts = timelineParts
     .filter((p): p is { type: "file"; part: FileUIPart } => p.type === "file")
     .map((p) => p.part);
+  const timelineHasSteps = timelineParts.some((p) => p.type !== "source");
 
   return (
     <div className="space-y-4">
@@ -1499,7 +1804,7 @@ export function StrandsChainOfThought({
         </div>
       )}
 
-      {timelineParts.length > 0 && (
+      {timelineHasSteps && (
         <ChainOfThought defaultOpen>
           <ChainOfThoughtHeader>Agent Execution Timeline</ChainOfThoughtHeader>
           <ChainOfThoughtContent>
@@ -1531,12 +1836,8 @@ export function StrandsChainOfThought({
               }
 
               if (item.type === "source") {
-                return (
-                  <SourceDocuments
-                    key={`source-${index}`}
-                    parts={[item.part]}
-                  />
-                );
+                // Aggregated into a single Sources block below the timeline.
+                return null;
               }
 
               if (item.type === "file") {
@@ -1554,9 +1855,7 @@ export function StrandsChainOfThought({
         </ChainOfThought>
       )}
 
-      {sourceParts.length > 1 && (
-        <SourceDocuments parts={sourceParts} />
-      )}
+      {sourceParts.length > 0 && <MessageSources parts={sourceParts} />}
       {fileParts.length > 1 && (
         <FileAttachments parts={fileParts} />
       )}

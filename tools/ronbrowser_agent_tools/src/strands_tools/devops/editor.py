@@ -70,7 +70,6 @@ See the editor function docstring for more details on available commands and par
 
 import os
 import re
-import shutil
 from typing import Any, Dict, List, Optional, Union
 
 from rich import box
@@ -81,6 +80,7 @@ from rich.text import Text
 from rich.tree import Tree
 from strands import tool
 
+from strands_tools.devops import container_fs
 from strands_tools.utils import console_util
 from strands_tools.utils.detect_language import detect_language
 from strands_tools.utils.user_input import get_user_input
@@ -142,7 +142,7 @@ def format_code(code: str, language: str) -> Syntax:
 
 
 def format_directory_tree(path: str, max_depth: int) -> Tree:
-    """Create a Rich tree visualization of directory structure."""
+    """Create a Rich tree visualization of a directory inside the virtual desktop."""
     tree = Tree(f"📁 {os.path.basename(path)}")
 
     def add_to_tree(current_path: str, tree_node: Tree, depth: int = 0) -> None:
@@ -150,16 +150,16 @@ def format_directory_tree(path: str, max_depth: int) -> Tree:
             return
 
         try:
-            for item in sorted(os.listdir(current_path)):
-                if item.startswith("."):
+            for name, entry_is_dir in sorted(container_fs.list_entries(current_path)):
+                if name.startswith("."):
                     continue
 
-                full_path = os.path.join(current_path, item)
-                if os.path.isdir(full_path):
-                    branch = tree_node.add(f"📁 {item}")
+                full_path = os.path.join(current_path, name)
+                if entry_is_dir:
+                    branch = tree_node.add(f"📁 {name}")
                     add_to_tree(full_path, branch, depth + 1)
                 else:
-                    tree_node.add(f"📄 {item}")
+                    tree_node.add(f"📄 {name}")
         except Exception as e:
             tree_node.add(f"⚠️ Error: {str(e)}")
 
@@ -460,12 +460,11 @@ def editor(
                 }
 
         if command == "view":
-            if os.path.isfile(path):
+            if container_fs.is_file(path):
                 # Check content history first
                 content = get_last_content(path)
                 if content is None:
-                    with open(path, "r") as f:
-                        content = f.read()
+                    content = container_fs.read_text(path)
                     save_content_history(path, content)
 
                 if view_range:
@@ -496,7 +495,7 @@ def editor(
                 console.print(formatted_output)
                 result = f"File content displayed in console.\nContent: {content}"
 
-            elif os.path.isdir(path):
+            elif container_fs.is_dir(path):
                 # Directory visualization
                 tree = format_directory_tree(path, editor_dir_tree_max_depth)
                 formatted_output = format_output(f"📁 Directory: {path}", tree, "blue")
@@ -509,11 +508,10 @@ def editor(
             if not file_text:
                 raise ValueError("file_text is required for create command")
 
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            container_fs.makedirs(os.path.dirname(path))
 
             # Write the file and cache content
-            with open(path, "w") as f:
-                f.write(file_text)
+            container_fs.write_text(path, file_text)
             save_content_history(path, file_text)
 
             # Just return success message
@@ -526,8 +524,7 @@ def editor(
             # Check content history first
             content = get_last_content(path)
             if content is None:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
                 save_content_history(path, content)
 
             # Count occurrences
@@ -544,11 +541,10 @@ def editor(
             disable_backup = os.environ.get("EDITOR_DISABLE_BACKUP", "").lower() == "true"
             if not disable_backup:
                 backup_path = f"{path}.bak"
-                shutil.copy2(path, backup_path)
+                container_fs.copy_file(path, backup_path)
 
             # Write new content and update cache
-            with open(path, "w") as f:
-                f.write(new_content)
+            container_fs.write_text(path, new_content)
             save_content_history(path, new_content)
 
             result = (
@@ -568,8 +564,7 @@ def editor(
             # Check content history
             content = get_last_content(path)
             if content is None:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
                 save_content_history(path, content)
 
             # Compile pattern and find matches
@@ -616,13 +611,12 @@ def editor(
             disable_backup = os.environ.get("EDITOR_DISABLE_BACKUP", "").lower() == "true"
             if not disable_backup:
                 backup_path = f"{path}.bak"
-                shutil.copy2(path, backup_path)
+                container_fs.copy_file(path, backup_path)
             else:
                 backup_path = "Disabled"
 
             # Write new content and update cache
-            with open(path, "w") as f:
-                f.write(new_content)
+            container_fs.write_text(path, new_content)
             save_content_history(path, new_content)
 
             # Show summary info
@@ -661,8 +655,7 @@ def editor(
             # Get content
             content = get_last_content(path)
             if content is None:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
                 save_content_history(path, content)
 
             lines = content.split("\n")
@@ -692,13 +685,12 @@ def editor(
             disable_backup = os.environ.get("EDITOR_DISABLE_BACKUP", "").lower() == "true"
             if not disable_backup:
                 backup_path = f"{path}.bak"
-                shutil.copy2(path, backup_path)
+                container_fs.copy_file(path, backup_path)
 
             # Insert and write
             lines.insert(insert_line, new_str)
             new_content = "\n".join(lines)
-            with open(path, "w") as f:
-                f.write(new_content)
+            container_fs.write_text(path, new_content)
             save_content_history(path, new_content)
 
             # Show context
@@ -733,8 +725,7 @@ def editor(
             # Get content
             content = get_last_content(path)
             if content is None:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
                 save_content_history(path, content)
 
             # Find line
@@ -779,16 +770,15 @@ def editor(
         elif command == "undo_edit":
             backup_path = f"{path}.bak"
 
-            if not os.path.exists(backup_path):
+            if not container_fs.exists(backup_path):
                 raise ValueError(f"No backup file found for {path}")
 
             # Restore from backup
-            shutil.copy2(backup_path, path)
-            os.remove(backup_path)
+            container_fs.copy_file(backup_path, path)
+            container_fs.remove(backup_path)
 
             # Update cache from backup
-            with open(path, "r") as f:
-                content = f.read()
+            content = container_fs.read_text(path)
             save_content_history(path, content)
 
             formatted_output = format_output("↩️ Undo Complete", f"Successfully reverted changes to {path}", "yellow")
@@ -868,8 +858,7 @@ def _build_ui_data(
         try:
             content = get_last_content(path)
             if content is None:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
         except Exception:
             return None
         return {
@@ -894,8 +883,7 @@ def _build_ui_data(
         content = get_last_content(path)
         if content is None:
             try:
-                with open(path, "r") as f:
-                    content = f.read()
+                content = container_fs.read_text(path)
             except Exception:
                 content = new_str or ""
         return {

@@ -3,8 +3,9 @@
 from typing import Dict, Any, List, Optional
 import json
 import os
-import subprocess
 from strands import tool
+
+from strands_tools.devops import container_fs
 
 
 def create_js_script(
@@ -90,16 +91,17 @@ def npm(
             kwargs or {},
         )
 
-        sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT")
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, cwd=sandbox)
+        sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT") or "/workspace"
+        # Run node inside the agent virtual desktop container (same boundary as `shell`).
+        returncode, stdout, stderr = container_fs.run(["node", "-e", script], cwd=sandbox)
 
-        if result.returncode != 0:
+        if returncode != 0:
             return {
                 "status": "error",
-                "content": [{"text": f"❌ Node.js error: {result.stderr}"}],
+                "content": [{"text": f"❌ Node.js error: {stderr}"}],
             }
 
-        output = json.loads(result.stdout)
+        output = json.loads(stdout)
 
         if output["status"] == "error":
             return {

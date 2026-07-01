@@ -64,6 +64,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 from strands.types.tools import ToolResult, ToolUse
 
+from strands_tools.devops import container_fs
 from strands_tools.utils import console_util
 from strands_tools.utils.user_input import get_user_input
 
@@ -247,10 +248,10 @@ def file_write(tool: ToolUse, **kwargs: Any) -> ToolResult:
             }
 
     try:
-        # Create directory if it doesn't exist
+        # Create directory if it doesn't exist (inside the virtual desktop container)
         directory = os.path.dirname(path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory)
+        if directory and not container_fs.exists(directory):
+            container_fs.makedirs(directory)
             console.print(
                 Panel(
                     Text(f"Created directory: {directory}", style="bold blue"),
@@ -261,9 +262,8 @@ def file_write(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 )
             )
 
-        # Write the file
-        with open(path, "w") as file:
-            file.write(content)
+        # Write the file (inside the virtual desktop container)
+        container_fs.write_text(path, content)
 
         success_message = f"File written successfully to {path}"
         success_panel = Panel(

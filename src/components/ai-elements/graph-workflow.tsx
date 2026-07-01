@@ -1,8 +1,11 @@
 "use client";
 
 import { type NodeProps as RFNodeProps } from "@xyflow/react";
-import { BotIcon } from "lucide-react";
+import { BotIcon, PlayIcon } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 import {
   Agent,
@@ -35,6 +38,8 @@ export interface GraphNodeState {
   status: GraphNodeStatus;
   text: string;
   executionTime?: number;
+  /** True when this node is a graph entry point (no upstream dependency). */
+  isEntry?: boolean;
 }
 
 export interface GraphEdgeState {
@@ -163,8 +168,8 @@ export function foldGraphEvents(events: GraphEvent[]): GraphWorkflowState {
 
 const STATUS_DOT: Record<GraphNodeStatus, string> = {
   pending: "bg-muted-foreground/40",
-  running: "bg-amber-400 animate-pulse",
-  completed: "bg-emerald-500",
+  running: "bg-primary animate-pulse",
+  completed: "bg-primary",
   failed: "bg-destructive",
 };
 
@@ -174,6 +179,33 @@ const STATUS_LABEL: Record<GraphNodeStatus, string> = {
   completed: "Completed",
   failed: "Failed",
 };
+
+/** Ring accent applied to a node card so its state reads at a glance. */
+const STATUS_RING: Record<GraphNodeStatus, string> = {
+  pending: "",
+  running: "shadow-md ring-2 ring-ring/60",
+  completed: "ring-1 ring-primary/25",
+  failed: "ring-2 ring-destructive/50",
+};
+
+/** Compact status key shown in the canvas corner so the dots are legible. */
+const LEGEND: { status: GraphNodeStatus; label: string }[] = [
+  { status: "running", label: "Running" },
+  { status: "completed", label: "Done" },
+  { status: "failed", label: "Failed" },
+  { status: "pending", label: "Queued" },
+];
+
+/** Horizontal / vertical distance between node cards in the auto-layout. */
+const COLUMN_GAP = 340;
+const ROW_GAP = 190;
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+}
 
 /**
  * Custom React Flow node. Renders the AI Elements `Node`; on hover it reveals a
@@ -190,9 +222,22 @@ const WorkflowNode = memo(({ data }: RFNodeProps) => {
       onMouseLeave={() => setHovered(false)}
     >
       <Toolbar isVisible={hovered}>
-        <Agent className="w-80 border-none">
+        <Agent className="w-80 border-none bg-transparent">
           <AgentHeader model={node.model ?? "parent"} name={node.id} />
           <AgentContent>
+            <div className="flex items-center gap-2 text-muted-foreground text-xs">
+              <span
+                className={cn("size-2 rounded-full", STATUS_DOT[node.status])}
+              />
+              <span className="font-medium text-foreground">
+                {STATUS_LABEL[node.status]}
+              </span>
+              {typeof node.executionTime === "number" && (
+                <span className="ml-auto font-mono text-[10px]">
+                  {formatDuration(node.executionTime)}
+                </span>
+              )}
+            </div>
             <AgentInstructions className="text-xs">
               {node.role ? `Role: ${node.role}` : "Delegated graph node."}
             </AgentInstructions>
@@ -213,28 +258,50 @@ const WorkflowNode = memo(({ data }: RFNodeProps) => {
       </Toolbar>
 
       <Node
-        className={
-          node.status === "running" ? "ring-2 ring-amber-400/60" : undefined
-        }
+        className={cn(
+          "w-64 shadow-sm transition-all",
+          STATUS_RING[node.status],
+          node.isEntry && node.status === "pending" && "ring-1 ring-primary/40"
+        )}
         handles={{ target: true, source: true }}
       >
         <NodeHeader>
-          <div className="flex items-center gap-2">
-            <BotIcon className="size-4 text-muted-foreground" />
-            <NodeTitle className="text-sm">{node.id}</NodeTitle>
-          </div>
-          {node.role && (
-            <NodeDescription className="text-xs">{node.role}</NodeDescription>
-          )}
-        </NodeHeader>
-        <NodeContent>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className={`size-2 rounded-full ${STATUS_DOT[node.status]}`} />
-            <span>{STATUS_LABEL[node.status]}</span>
-            {typeof node.executionTime === "number" && (
-              <span className="ml-auto font-mono">{node.executionTime}ms</span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <BotIcon className="size-4 shrink-0 text-muted-foreground" />
+              <NodeTitle className="truncate text-sm">{node.id}</NodeTitle>
+            </div>
+            {node.isEntry && (
+              <PlayIcon
+                aria-label="Entry point"
+                className="size-3.5 shrink-0 text-primary"
+              />
             )}
           </div>
+          {node.role && (
+            <NodeDescription className="truncate text-xs capitalize">
+              {node.role}
+            </NodeDescription>
+          )}
+        </NodeHeader>
+        <NodeContent className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs">
+            <span className={cn("size-2 rounded-full", STATUS_DOT[node.status])} />
+            <span className="font-medium">{STATUS_LABEL[node.status]}</span>
+            {typeof node.executionTime === "number" && (
+              <span className="ml-auto font-mono text-[10px]">
+                {formatDuration(node.executionTime)}
+              </span>
+            )}
+          </div>
+          {node.model && (
+            <Badge
+              className="w-fit max-w-full truncate font-mono text-[10px]"
+              variant="secondary"
+            >
+              {node.model}
+            </Badge>
+          )}
         </NodeContent>
       </Node>
     </div>
@@ -243,13 +310,20 @@ const WorkflowNode = memo(({ data }: RFNodeProps) => {
 WorkflowNode.displayName = "WorkflowNode";
 
 const nodeTypes = { workflow: WorkflowNode };
-const edgeTypes = { animated: Edge.Animated, temporary: Edge.Temporary };
+const edgeTypes = {
+  connecting: Edge.Connecting,
+  settled: Edge.Settled,
+  temporary: Edge.Temporary,
+};
 
 /**
  * Assign columns by longest-path depth from the entry points so the DAG reads
- * left-to-right; rows stack nodes that share a depth.
+ * left-to-right; nodes that share a depth stack into a vertically-centred
+ * column so the graph stays balanced and the cards never overlap.
  */
-function layout(state: GraphWorkflowState): Record<string, { x: number; y: number }> {
+function layout(
+  state: GraphWorkflowState
+): Record<string, { x: number; y: number }> {
   const depth = new Map<string, number>();
   for (const n of state.nodes) {
     depth.set(n.id, 0);
@@ -269,13 +343,27 @@ function layout(state: GraphWorkflowState): Record<string, { x: number; y: numbe
     }
   }
 
-  const rowByDepth = new Map<number, number>();
-  const positions: Record<string, { x: number; y: number }> = {};
+  // Group node ids by depth, preserving discovery order within each column.
+  const columns = new Map<number, string[]>();
   for (const n of state.nodes) {
     const d = depth.get(n.id) ?? 0;
-    const row = rowByDepth.get(d) ?? 0;
-    rowByDepth.set(d, row + 1);
-    positions[n.id] = { x: d * 320, y: row * 150 };
+    const column = columns.get(d) ?? [];
+    column.push(n.id);
+    columns.set(d, column);
+  }
+
+  const tallest = Math.max(
+    1,
+    ...Array.from(columns.values(), (ids) => ids.length)
+  );
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  for (const [d, ids] of columns) {
+    // Vertically centre shorter columns against the tallest one.
+    const offset = ((tallest - ids.length) * ROW_GAP) / 2;
+    ids.forEach((id, row) => {
+      positions[id] = { x: d * COLUMN_GAP, y: offset + row * ROW_GAP };
+    });
   }
   return positions;
 }
@@ -292,32 +380,61 @@ export interface GraphWorkflowProps {
 export const GraphWorkflow = memo(({ data, isStreaming }: GraphWorkflowProps) => {
   const positions = useMemo(() => layout(data), [data]);
 
+  // Entry points are the ones the graph declared, or — failing that — any node
+  // with no incoming edge, so the "start here" marker is always meaningful.
+  const entrySet = useMemo(() => {
+    if (data.entryPoints.length) {
+      return new Set(data.entryPoints);
+    }
+    const hasIncoming = new Set(data.edges.map((e) => e.to));
+    return new Set(
+      data.nodes.filter((n) => !hasIncoming.has(n.id)).map((n) => n.id)
+    );
+  }, [data.entryPoints, data.edges, data.nodes]);
+
   const rfNodes = useMemo(
     () =>
       data.nodes.map((node) => ({
         id: node.id,
         type: "workflow",
         position: positions[node.id] ?? { x: 0, y: 0 },
-        data: node as unknown as Record<string, unknown>,
+        data: {
+          ...node,
+          isEntry: entrySet.has(node.id),
+        } as unknown as Record<string, unknown>,
       })),
-    [data.nodes, positions]
+    [data.nodes, positions, entrySet]
   );
 
   const rfEdges = useMemo(
     () =>
       data.edges.map((edge) => {
         const target = data.nodes.find((n) => n.id === edge.to);
-        const live =
-          target?.status === "running" || target?.status === "completed";
+        // Live hand-off into a running agent -> shared connection-line visual;
+        // finished -> a quiet settled line; otherwise a pending dashed line.
+        const type =
+          target?.status === "running"
+            ? "connecting"
+            : target?.status === "completed"
+              ? "settled"
+              : "temporary";
         return {
           id: `${edge.from}->${edge.to}`,
           source: edge.from,
           target: edge.to,
-          type: live ? "animated" : "temporary",
+          type,
         };
       }),
     [data.edges, data.nodes]
   );
+
+  // Grow the canvas with the tallest column so small graphs are not a giant
+  // empty box and large ones get room to breathe (fitView keeps it framed).
+  const height = useMemo(() => {
+    const ys = Object.values(positions).map((p) => p.y);
+    const rows = ys.length ? Math.round(Math.max(...ys) / ROW_GAP) + 1 : 1;
+    return Math.min(560, Math.max(300, rows * ROW_GAP + 80));
+  }, [positions]);
 
   if (data.nodes.length === 0) {
     return (
@@ -328,20 +445,39 @@ export const GraphWorkflow = memo(({ data, isStreaming }: GraphWorkflowProps) =>
   }
 
   return (
-    <div className="h-[420px] w-full overflow-hidden rounded-md border">
+    <div className="w-full overflow-hidden rounded-md border" style={{ height }}>
       <Canvas
         connectionLineComponent={Connection}
         edges={rfEdges}
         edgeTypes={edgeTypes}
+        fitView
+        fitViewOptions={{ maxZoom: 1, minZoom: 0.3, padding: 0.28 }}
+        maxZoom={1.5}
+        minZoom={0.3}
         nodes={rfNodes}
         nodeTypes={nodeTypes}
       >
         <Panel className="text-xs" position="top-left">
-          <span className="font-medium">Agent Graph</span>
-          <span className="ml-2 text-muted-foreground">
-            {data.nodes.length} nodes · {data.edges.length} edges
-            {isStreaming ? " · live" : ""}
-          </span>
+          <div className="flex items-center gap-2 px-1 py-0.5">
+            <span className="font-medium">Agent Graph</span>
+            <span className="text-muted-foreground">
+              {data.nodes.length} {data.nodes.length === 1 ? "node" : "nodes"} ·{" "}
+              {data.edges.length} {data.edges.length === 1 ? "edge" : "edges"}
+              {isStreaming ? " · live" : ""}
+            </span>
+          </div>
+        </Panel>
+        <Panel className="text-[10px]" position="top-right">
+          <div className="flex items-center gap-3 px-1 py-0.5 text-muted-foreground">
+            {LEGEND.map((item) => (
+              <span className="flex items-center gap-1.5" key={item.status}>
+                <span
+                  className={cn("size-2 rounded-full", STATUS_DOT[item.status])}
+                />
+                {item.label}
+              </span>
+            ))}
+          </div>
         </Panel>
         <Controls />
       </Canvas>

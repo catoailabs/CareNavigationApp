@@ -1,4 +1,9 @@
-import type { EdgeProps, InternalNode, Node } from "@xyflow/react";
+import type {
+  ConnectionLineComponentProps,
+  EdgeProps,
+  InternalNode,
+  Node,
+} from "@xyflow/react";
 import {
   BaseEdge,
   getBezierPath,
@@ -6,6 +11,8 @@ import {
   Position,
   useInternalNode,
 } from "@xyflow/react";
+
+import { Connection } from "./connection";
 
 const Temporary = ({
   id,
@@ -27,7 +34,7 @@ const Temporary = ({
 
   return (
     <BaseEdge
-      className="stroke-1 stroke-ring"
+      className="stroke-[1.5] stroke-muted-foreground/30"
       id={id}
       path={edgePath}
       style={{
@@ -105,7 +112,11 @@ const getEdgeParams = (
   };
 };
 
-const Animated = ({ id, source, target, markerEnd, style }: EdgeProps) => {
+/**
+ * A settled hand-off: a quiet, static line for edges into an agent that has
+ * already finished. Uses the neutral border token so it recedes.
+ */
+const Settled = ({ id, source, target, markerEnd, style }: EdgeProps) => {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
 
@@ -128,16 +139,52 @@ const Animated = ({ id, source, target, markerEnd, style }: EdgeProps) => {
   });
 
   return (
-    <>
-      <BaseEdge id={id} markerEnd={markerEnd} path={edgePath} style={style} />
-      <circle fill="var(--primary)" r="4">
-        <animateMotion dur="2s" path={edgePath} repeatCount="indefinite" />
-      </circle>
-    </>
+    <BaseEdge
+      className="stroke-[1.5] stroke-border"
+      id={id}
+      markerEnd={markerEnd}
+      path={edgePath}
+      style={style}
+    />
+  );
+};
+
+/**
+ * A live hand-off into a currently-running agent. Reuses the shared
+ * connection-line visual (see connection.tsx) so an in-flight edge reads the
+ * same as React Flow's interactive "connecting" state, tinted with the brand
+ * ring token.
+ */
+const Connecting = ({ source, target }: EdgeProps) => {
+  const sourceNode = useInternalNode(source);
+  const targetNode = useInternalNode(target);
+
+  if (!(sourceNode && targetNode)) {
+    return null;
+  }
+
+  const { sx, sy, tx, ty, sourcePos, targetPos } = getEdgeParams(
+    sourceNode,
+    targetNode
+  );
+
+  return (
+    <Connection
+      {...({
+        fromPosition: sourcePos,
+        fromX: sx,
+        fromY: sy,
+        toPosition: targetPos,
+        toX: tx,
+        toY: ty,
+      } as ConnectionLineComponentProps)}
+    />
   );
 };
 
 export const Edge = {
-  Animated,
+  Animated: Settled,
+  Connecting,
+  Settled,
   Temporary,
 };

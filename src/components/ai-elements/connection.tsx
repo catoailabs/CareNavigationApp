@@ -10,19 +10,23 @@ export const Connection: ConnectionLineComponent = ({
 }) => (
   <g>
     <path
-      className="animated"
       d={`M${fromX},${fromY} C ${fromX + (toX - fromX) * HALF},${fromY} ${fromX + (toX - fromX) * HALF},${toY} ${toX},${toY}`}
       fill="none"
       stroke="var(--color-ring)"
-      strokeWidth={1}
+      strokeWidth={1.5}
+      style={{
+        strokeDasharray: "6 4",
+        // Reuse React Flow's built-in dash keyframe so the live line flows.
+        animation: "dashdraw 0.6s linear infinite",
+      }}
     />
     <circle
       cx={toX}
       cy={toY}
-      fill="#fff"
+      fill="var(--color-background)"
       r={3}
       stroke="var(--color-ring)"
-      strokeWidth={1}
+      strokeWidth={1.5}
     />
   </g>
 );

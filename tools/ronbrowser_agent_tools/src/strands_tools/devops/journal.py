@@ -46,7 +46,7 @@ See the journal function docstring for more details on available actions and par
 
 from datetime import datetime
 import os
-from pathlib import Path
+import posixpath
 from typing import Any, Dict, Optional
 
 from rich import box
@@ -57,40 +57,46 @@ from rich.table import Table
 from rich.text import Text
 from strands import tool
 
+from strands_tools.devops import container_fs
 from strands_tools.utils import console_util
 
 
-def ensure_journal_dir() -> Path:
-    """
-    Ensure journal directory exists.
+def _sandbox_base() -> str:
+    """Base directory inside the virtual desktop container for agent artifacts."""
+    return os.environ.get("RON_AGENT_SANDBOX_ROOT") or "/workspace"
 
-    Creates the journal directory if it doesn't exist and returns
-    the path to it.
+
+def ensure_journal_dir() -> str:
+    """
+    Ensure the journal directory exists inside the virtual desktop container.
 
     Returns:
-        Path: The path to the journal directory
+        str: The container path to the journal directory
     """
-    sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT")
-    base = Path(sandbox) if sandbox else Path.cwd()
-    journal_dir = base / "journal"
-    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_dir = posixpath.join(_sandbox_base(), "journal")
+    container_fs.makedirs(journal_dir)
     return journal_dir
 
 
-def get_journal_path(date_str: Optional[str] = None) -> Path:
+def get_journal_path(date_str: Optional[str] = None) -> str:
     """
-    Get journal file path for given date.
+    Get journal file path (inside the container) for the given date.
 
     Args:
         date_str: Optional date string in YYYY-MM-DD format. If not provided,
                   current date is used.
 
     Returns:
-        Path: Path to the journal file for the specified date
+        str: Container path to the journal file for the specified date
     """
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
-    return ensure_journal_dir() / f"{date_str}.md"
+    return posixpath.join(ensure_journal_dir(), f"{date_str}.md")
+
+
+def _stem(path: str) -> str:
+    """Filename without directory or extension (e.g. .../2023-04-15.md -> 2023-04-15)."""
+    return posixpath.splitext(posixpath.basename(path))[0]
 
 
 def create_rich_response(console: Console, action: str, result: Dict[str, Any]) -> None:
@@ -217,11 +223,10 @@ def journal(
             journal_path = get_journal_path(date)
             timestamp = datetime.now().strftime("%H:%M:%S")
 
-            with open(journal_path, "a") as f:
-                f.write(f"\n## {timestamp}\n{content}\n")
+            container_fs.append_text(journal_path, f"\n## {timestamp}\n{content}\n")
 
             result = {
-                "date": journal_path.stem,
+                "date": _stem(journal_path),
                 "path": str(journal_path),
                 "content": content,
                 "timestamp": timestamp,
@@ -235,16 +240,15 @@ def journal(
 
         elif action == "read":
             journal_path = get_journal_path(date)
-            if not journal_path.exists():
+            if not container_fs.exists(journal_path):
                 return {
                     "status": "error",
-                    "content": [{"text": f"No journal found for date: {journal_path.stem}"}],
+                    "content": [{"text": f"No journal found for date: {_stem(journal_path)}"}],
                 }
 
-            with open(journal_path) as f:
-                content = f.read()
+            content = container_fs.read_text(journal_path)
 
-            result = {"date": journal_path.stem, "content": content}
+            result = {"date": _stem(journal_path), "content": content}
 
             create_rich_response(console, action, result)
             return {
@@ -254,7 +258,7 @@ def journal(
 
         elif action == "list":
             journal_dir = ensure_journal_dir()
-            journals = sorted(journal_dir.glob("*.md"))
+            journals = sorted(container_fs.glob(posixpath.join(journal_dir, "*.md")))
 
             if not journals:
                 return {
@@ -264,17 +268,16 @@ def journal(
 
             entries = []
             for journal in journals:
-                with open(journal) as f:
-                    content = f.read()
-                    entry_count = len([line for line in content.split("\n") if line.startswith("## ")])
-                    task_count = content.count("- [ ]")
-                    entries.append(
-                        {
-                            "date": journal.stem,
-                            "entry_count": entry_count,
-                            "task_count": task_count,
-                        }
-                    )
+                content = container_fs.read_text(journal)
+                entry_count = len([line for line in content.split("\n") if line.startswith("## ")])
+                task_count = content.count("- [ ]")
+                entries.append(
+                    {
+                        "date": _stem(journal),
+                        "entry_count": entry_count,
+                        "task_count": task_count,
+                    }
+                )
 
             result = {"entries": entries}
             create_rich_response(console, action, result)
@@ -294,10 +297,9 @@ def journal(
             journal_path = get_journal_path(date)
             timestamp = datetime.now().strftime("%H:%M:%S")
 
-            with open(journal_path, "a") as f:
-                f.write(f"\n## {timestamp} - Task\n- [ ] {task}\n")
+            container_fs.append_text(journal_path, f"\n## {timestamp} - Task\n- [ ] {task}\n")
 
-            result = {"date": journal_path.stem, "task": task, "timestamp": timestamp}
+            result = {"date": _stem(journal_path), "task": task, "timestamp": timestamp}
 
             create_rich_response(console, action, result)
             return {

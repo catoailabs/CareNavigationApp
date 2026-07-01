@@ -3,8 +3,8 @@ import inspect
 import logging
 import os
 import pkgutil
-import platform
-import subprocess
+import posixpath
+import tempfile
 from typing import Any, Dict, List, Union
 
 import graphviz
@@ -14,6 +14,9 @@ import networkx as nx
 from diagrams import Diagram as CloudDiagram
 from diagrams import aws
 from strands import tool
+
+from . import container_fs
+from .container_fs import ContainerFsError
 
 matplotlib.use("Agg")  # Set the backend after importing matplotlib
 
@@ -258,6 +261,7 @@ class DiagramBuilder:
                         from_node >> to_node
 
             output_file = f"{output_path}.{output_format}"
+            output_file = _publish_diagram(output_file)
             if self.open_diagram_flag:
                 open_diagram(output_file)
             return output_file
@@ -289,6 +293,7 @@ class DiagramBuilder:
 
         output_path = save_diagram_to_directory(self.title, "")
         rendered_path = dot.render(filename=output_path, format=output_format, cleanup=False)
+        rendered_path = _publish_diagram(rendered_path)
         if self.open_diagram_flag:
             open_diagram(rendered_path)
         return rendered_path
@@ -351,6 +356,7 @@ class DiagramBuilder:
         output_path = save_diagram_to_directory(self.title, output_format)
         plt.savefig(output_path, bbox_inches="tight")
         plt.close()
+        output_path = _publish_diagram(output_path)
         if self.open_diagram_flag:
             open_diagram(output_path)
         return output_path
@@ -696,6 +702,7 @@ class UMLDiagramBuilder:
         plt.tight_layout()
         plt.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close()
+        output_path = _publish_diagram(output_path)
         if self.open_diagram_flag:
             open_diagram(output_path)
         return output_path
@@ -1001,6 +1008,7 @@ class UMLDiagramBuilder:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
+        output_path = _publish_diagram(output_path)
         if self.open_diagram_flag:
             open_diagram(output_path)
         return output_path
@@ -1037,13 +1045,48 @@ class UMLDiagramBuilder:
         """Save diagram and return file path"""
         output_path = save_diagram_to_directory(self.title, "")
         rendered_path = dot.render(filename=output_path, format=output_format, cleanup=False)
+        rendered_path = _publish_diagram(rendered_path)
         if self.open_diagram_flag:
             open_diagram(rendered_path)
         return rendered_path
 
 
+def _container_diagrams_dir() -> str:
+    """Diagrams directory *inside* the virtual desktop container."""
+    sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT") or "/workspace"
+    return posixpath.join(sandbox, "diagrams")
+
+
+def _publish_diagram(host_path: str) -> str:
+    """Copy a host-rendered diagram into the virtual desktop container.
+
+    diagram.py's rendering stack (matplotlib / graphviz / diagrams) has no
+    counterpart installed inside the ``ron-agent-desktop`` container, so the
+    heavy rendering runs on the agent host. The finished artifact is then placed
+    on the *container* filesystem (``<sandbox>/diagrams/``) so that ``shell`` and
+    ``file_read`` observe the same file every other tool does. Returns the
+    in-container path (or the original host path if publishing fails).
+    """
+    container_dir = _container_diagrams_dir()
+    container_path = posixpath.join(container_dir, os.path.basename(host_path))
+    try:
+        with open(host_path, "rb") as f:
+            data = f.read()
+        container_fs.makedirs(container_dir)
+        container_fs.write_bytes(container_path, data)
+    except (OSError, ContainerFsError) as e:
+        logging.error(f"Failed to place diagram into virtual desktop: {e}")
+        return host_path
+    return container_path
+
+
 def save_diagram_to_directory(title: str, extension: str, content: str = None) -> str:
-    """Helper function to save diagrams to the diagrams directory
+    """Helper function to stage diagrams for placement in the virtual desktop.
+
+    Rendering libraries write to a host staging directory; the caller publishes
+    the finished file into the container via :func:`_publish_diagram`. For
+    text-based formats (``content`` provided) the file is written and published
+    here directly, returning the in-container path.
 
     Args:
         title: Base filename for the diagram
@@ -1051,48 +1094,45 @@ def save_diagram_to_directory(title: str, extension: str, content: str = None) -
         content: Text content to write (for text-based formats)
 
     Returns:
-        Full path to the saved file
+        Host staging path (library-rendered formats) or in-container path
+        (text-based formats when ``content`` is provided).
     """
-    sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT")
-    diagrams_base = sandbox if sandbox else os.getcwd()
-    diagrams_dir = os.path.join(diagrams_base, "diagrams")
-    os.makedirs(diagrams_dir, exist_ok=True)
+    host_dir = os.path.join(tempfile.gettempdir(), "ron_diagrams")
+    os.makedirs(host_dir, exist_ok=True)
 
     # Ensure extension starts with dot
-    if not extension.startswith("."):
+    if extension and not extension.startswith("."):
         extension = "." + extension
 
-    output_path = os.path.join(diagrams_dir, f"{title}{extension}")
+    output_path = os.path.join(host_dir, f"{title}{extension}")
 
-    # Write content if provided (for text-based formats)
+    # Write content if provided (for text-based formats) and publish immediately.
     if content is not None:
         with open(output_path, "w") as f:
             f.write(content)
+        return _publish_diagram(output_path)
 
     return output_path
 
 
 def open_diagram(file_path: str) -> None:
-    """Helper function to open diagram files across different operating systems"""
-    if not os.path.exists(file_path):
-        logging.error(f"Cannot open diagram: file does not exist: {file_path}")
+    """Open a diagram file on the virtual desktop container's display.
+
+    The virtual desktop *is* a container running a desktop environment, so the
+    file is opened there (via ``xdg-open``) rather than on the agent host.
+    """
+    if not container_fs.exists(file_path):
+        logging.error(f"Cannot open diagram: file does not exist in virtual desktop: {file_path}")
         return
 
     try:
-        system = platform.system()
-        if system == "Darwin":
-            subprocess.Popen(["open", file_path], start_new_session=True)
-        elif system == "Windows":
-            os.startfile(file_path)
+        rc, _out, err = container_fs.run(["xdg-open", file_path])
+        if rc != 0:
+            logging.error(f"Failed to open diagram {file_path}: {err.strip()}")
         else:
-            subprocess.Popen(["xdg-open", file_path], start_new_session=True)
-        logging.info(f"Opened diagram: {file_path}")
-    except FileNotFoundError:
-        logging.error(f"System command not found for opening files on {system}")
-    except subprocess.SubprocessError as e:
+            logging.info(f"Opened diagram: {file_path}")
+    except ContainerFsError as e:
         logging.error(f"Failed to open diagram {file_path}: {e}")
-    except Exception as e:
-        logging.error(f"Unexpected error opening diagram {file_path}: {e}")
 
 
 @tool

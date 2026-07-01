@@ -2,33 +2,38 @@
 
 from typing import Dict, Any, Optional, List
 import os
-from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
-import json
+import posixpath
+from jinja2 import Environment
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from strands import tool
 
+from strands_tools.devops import container_fs
+
 console = Console()
 
-_sandbox = os.environ.get("RON_AGENT_SANDBOX_ROOT")
-_base = Path(_sandbox) if _sandbox else Path.cwd()
-TEMPLATE_DIR = _base / "templates"
-TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
-
+# Rendering only uses ``env.from_string`` on content fetched from the virtual
+# desktop container, so no host-side FileSystemLoader is needed.
 env = Environment(
-    loader=FileSystemLoader(str(TEMPLATE_DIR)),
     trim_blocks=True,
     lstrip_blocks=True,
     autoescape=True,
 )
 
 
-def get_template_path(name: str) -> Path:
-    """Get template file path"""
-    return TEMPLATE_DIR / f"{name}.j2"
+def _template_dir() -> str:
+    """Templates directory inside the virtual desktop container (created on demand)."""
+    base = os.environ.get("RON_AGENT_SANDBOX_ROOT") or "/workspace"
+    template_dir = posixpath.join(base, "templates")
+    container_fs.makedirs(template_dir)
+    return template_dir
+
+
+def get_template_path(name: str) -> str:
+    """Get template file path inside the container"""
+    return posixpath.join(_template_dir(), f"{name}.j2")
 
 
 @tool
@@ -62,8 +67,7 @@ def template(
             syntax = Syntax(content, "jinja", theme="monokai", line_numbers=True)
             console.print(Panel(syntax, title=f"[green]Creating: {template_name}"))
 
-            with open(template_path, "w") as f:
-                f.write(content)
+            container_fs.write_text(template_path, content)
 
             console.print("[green]✓[/green] Template saved!")
 
@@ -83,7 +87,7 @@ def template(
                 }
 
             template_path = get_template_path(template_name)
-            if not template_path.exists():
+            if not container_fs.exists(template_path):
                 return {
                     "status": "error",
                     "content": [{"text": f"❌ Template not found: {template_name}"}],
@@ -100,8 +104,7 @@ def template(
                     table.add_row(str(k), str(v))
                 console.print(Panel(table, title="[blue]Variables"))
 
-            with open(template_path) as f:
-                tmpl_content = f.read()
+            tmpl_content = container_fs.read_text(template_path)
 
             tmpl = env.from_string(tmpl_content)
             rendered = tmpl.render(**vars_dict)
@@ -119,11 +122,10 @@ def template(
         elif action == "list":
             templates: List[Dict[str, Any]] = []
 
-            for path in TEMPLATE_DIR.glob("*.j2"):
-                with open(path) as f:
-                    tmpl_content = f.read()
+            for path in sorted(container_fs.glob(posixpath.join(_template_dir(), "*.j2"))):
+                tmpl_content = container_fs.read_text(path)
                 templates.append(
-                    {"name": path.stem, "path": str(path), "content": tmpl_content}
+                    {"name": posixpath.splitext(posixpath.basename(path))[0], "path": str(path), "content": tmpl_content}
                 )
 
             if templates:

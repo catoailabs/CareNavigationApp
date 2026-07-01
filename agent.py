@@ -401,40 +401,70 @@ def _extract_sources(tool_result: dict[str, Any]) -> list[dict[str, str]]:
     """Pull citation entries out of a Strands tool_result so they can be
     re-emitted as AI SDK v6 source-url parts.
 
-    Looks at top-level `content` blocks for `{"json": {<key>: [...]}}` shapes
-    where <key> is one of `sources`, `citations`, `results`, `documents`.
-    Each entry may be a dict with `url`/`link`/`href` (plus optional title) OR
-    a bare URL string (perplexity_deep_research returns string citations in
-    some response shapes). Title is optional; falls back to URL when missing.
+    Reads each `content` block's structured payload — either a native
+    ``{"json": {...}}`` block or a ``{"text": "<JSON string>"}`` block (Strands
+    serializes dict-returning tools, e.g. ``perplexity_*``, as a single JSON text
+    block). From that payload it collects URLs under `sources`, `citations`,
+    `results`, `documents`, the perplexity ``__ui_data__.data.results`` block,
+    and nested ``results[].results[]`` groups. Each entry may be a dict with
+    `url`/`link`/`href` (plus optional title) OR a bare URL string
+    (perplexity_deep_research returns string citations in some response shapes).
+    Title is optional; falls back to the URL when missing.
     """
     entries: list[dict[str, str]] = []
     seen: set[str] = set()
+
+    def _add(url: Any, title: Any) -> None:
+        if (
+            isinstance(url, str)
+            and url.startswith(("http://", "https://"))
+            and url not in seen
+        ):
+            seen.add(url)
+            entries.append(
+                {"url": url, "title": title if isinstance(title, str) and title else url}
+            )
+
+    def _collect(collection: Any) -> None:
+        if not isinstance(collection, list):
+            return
+        for item in collection:
+            if isinstance(item, str):
+                _add(item, item)
+            elif isinstance(item, dict):
+                # Perplexity nests each query's pages under an inner `results`
+                # list (`results: [{query, results: [{url, title, ...}]}]`).
+                if isinstance(item.get("results"), list):
+                    _collect(item["results"])
+                    continue
+                _add(
+                    item.get("url") or item.get("link") or item.get("href"),
+                    item.get("title") or item.get("name"),
+                )
+
     content = tool_result.get("content") or []
     for block in content:
         if not isinstance(block, dict):
             continue
         payload = block.get("json")
+        if payload is None:
+            text = block.get("text")
+            if isinstance(text, str):
+                stripped = text.strip()
+                if stripped.startswith(("{", "[")):
+                    try:
+                        payload = json.loads(stripped)
+                    except ValueError:
+                        payload = None
         if not isinstance(payload, dict):
             continue
         for key in ("sources", "citations", "results", "documents"):
-            collection = payload.get(key)
-            if not isinstance(collection, list):
-                continue
-            for item in collection:
-                url: str | None = None
-                title: str | None = None
-                if isinstance(item, str) and item.startswith(("http://", "https://")):
-                    url = item
-                elif isinstance(item, dict):
-                    candidate = item.get("url") or item.get("link") or item.get("href")
-                    if isinstance(candidate, str):
-                        url = candidate
-                    raw_title = item.get("title") or item.get("name")
-                    if isinstance(raw_title, str):
-                        title = raw_title
-                if url and url not in seen:
-                    seen.add(url)
-                    entries.append({"url": url, "title": title or url})
+            _collect(payload.get(key))
+        ui_data = payload.get("__ui_data__")
+        if isinstance(ui_data, dict):
+            data = ui_data.get("data")
+            if isinstance(data, dict):
+                _collect(data.get("results"))
     return entries
 
 
@@ -673,6 +703,19 @@ async def strands_to_aisdk_stream(
     in_text = False
     in_reasoning = False
     active_tools: dict[str, dict[str, Any]] = {}
+    emitted_source_urls: set[str] = set()
+
+    def _source_frames(tool_result: dict[str, Any]) -> list[str]:
+        """Dedup + serialize a tool_result's sources as SSE source-url frames."""
+        frames: list[str] = []
+        for source in _extract_sources(tool_result):
+            if source["url"] in emitted_source_urls:
+                continue
+            emitted_source_urls.add(source["url"])
+            frames.append(
+                f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': source['url'], 'title': source['title']})}\n\n"
+            )
+        return frames
 
     yield f"data: {json.dumps({'type': 'start', 'messageId': msg_id})}\n\n"
     yield f"data: {json.dumps({'type': 'start-step'})}\n\n"
@@ -752,10 +795,8 @@ async def strands_to_aisdk_stream(
                 session_agent, str(tool_result.get("toolUseId", ""))
             ):
                 yield f"data: {json.dumps(file_part)}\n\n"
-            for source in _extract_sources(tool_result):
-                yield (
-                    f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': source['url'], 'title': source['title']})}\n\n"
-                )
+            for frame in _source_frames(tool_result):
+                yield frame
             continue
 
         if isinstance(event.get("message"), dict):
@@ -769,9 +810,40 @@ async def strands_to_aisdk_stream(
                         session_agent, str(tool_result.get("toolUseId", ""))
                     ):
                         yield f"data: {json.dumps(file_part)}\n\n"
-                    for source in _extract_sources(tool_result):
+                    for frame in _source_frames(tool_result):
+                        yield frame
+            continue
+
+        raw_model_event = event.get("event")
+        if isinstance(raw_model_event, dict) and isinstance(
+            raw_model_event.get("metadata"), dict
+        ):
+            # Grok native web_search / x_search deliver their citations on the
+            # model metadata event (event.event.metadata.citations — a repeated
+            # list of URL strings). Re-emit each as a source-url part so they
+            # join the unified Sources list on the client.
+            citations = raw_model_event["metadata"].get("citations")
+            if citations:
+                for item in citations:
+                    url: str | None = None
+                    title: str | None = None
+                    if isinstance(item, str) and item.startswith(
+                        ("http://", "https://")
+                    ):
+                        url = item
+                    elif isinstance(item, dict):
+                        candidate = (
+                            item.get("url") or item.get("link") or item.get("href")
+                        )
+                        if isinstance(candidate, str):
+                            url = candidate
+                        raw_title = item.get("title") or item.get("name")
+                        if isinstance(raw_title, str):
+                            title = raw_title
+                    if url and url not in emitted_source_urls:
+                        emitted_source_urls.add(url)
                         yield (
-                            f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': source['url'], 'title': source['title']})}\n\n"
+                            f"data: {json.dumps({'type': 'source-url', 'sourceId': uuid.uuid4().hex, 'url': url, 'title': title or url})}\n\n"
                         )
             continue
 

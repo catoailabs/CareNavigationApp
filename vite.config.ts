@@ -16,6 +16,28 @@ export default defineConfig({
   },
   server: {
     host: true,
+    watch: {
+      // The Python agent writes runtime artifacts (a live Chromium profile,
+      // logs, REPL state, streaming event logs) into the workspace during a
+      // run. Vite watches the project root by default, so each of those writes
+      // triggers a full-page reload — which wipes the in-progress chat. Ignore
+      // those agent-owned paths so the frontend stays stable while the agent
+      // runs. Directory ignores are anchored to the repo root so they never
+      // match similarly-named folders under src/ (e.g. src/data).
+      ignored: [
+        path.resolve(__dirname, 'tools/.runtime') + '/**',
+        path.resolve(__dirname, 'logs') + '/**',
+        path.resolve(__dirname, 'repl_state') + '/**',
+        path.resolve(__dirname, 'errors') + '/**',
+        path.resolve(__dirname, 'slack_events') + '/**',
+        path.resolve(__dirname, 'data') + '/**',
+        path.resolve(__dirname, 'templates') + '/**',
+        '**/.venv/**',
+        '**/__pycache__/**',
+        '**/*.jsonl',
+        '**/*.log',
+      ],
+    },
     proxy: {
       // Proxy to Chrome DevTools Protocol for real tab access
       '/api/chrome-tabs': {

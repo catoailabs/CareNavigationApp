@@ -145,7 +145,10 @@ export function usePromptMentionPicker({
   }, [filteredItems])
 
   const close = useCallback(() => {
-    setState((current) => ({ ...current, open: false, query: '' }))
+    setState((current) => {
+      if (!current.open && current.query === '') return current
+      return { ...current, open: false, query: '' }
+    })
     lastAtIndexRef.current = null
   }, [])
 

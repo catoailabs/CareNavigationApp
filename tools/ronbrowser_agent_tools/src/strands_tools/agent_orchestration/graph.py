@@ -127,8 +127,18 @@ def create_agent_with_model(
     Returns:
         Configured Agent instance
     """
-    # Create model
-    model = create_model(provider=model_provider or "default", config=model_settings or {})
+    # Create model. When no explicit (real) provider is requested, inherit the
+    # parent agent's model so subagent nodes run on the same model as the
+    # parent. "default" is a display sentinel, not a valid provider name, so
+    # passing it to create_model() would raise "Unknown model provider: default".
+    if model_provider and model_provider != "default":
+        model = create_model(provider=model_provider, config=model_settings or {})
+    elif parent_agent is not None:
+        model = parent_agent.model
+    else:
+        # No parent to inherit from: let the SDK resolve its own default
+        # provider (STRANDS_PROVIDER env var, else bedrock) via provider=None.
+        model = create_model(provider=None, config=model_settings or {})
 
     # Determine tools
     agent_tools = []
@@ -396,7 +406,7 @@ async def graph(
                         "id": str,
                         "role": str,
                         "system_prompt": str,
-                        "model_provider": str (optional),
+                        "model_provider": str (optional; omit to inherit the parent agent's model),
                         "model_settings": dict (optional),
                         "tools": list[str] (optional)
                     }, ...
@@ -408,6 +418,8 @@ async def graph(
         model_provider: Default model provider for all agents in the graph.
             Individual nodes can override this with their own model_provider.
             Options: "bedrock", "anthropic", "litellm", "ollama", "openai", etc.
+            Leave unset (recommended) to have every node inherit the parent
+            agent's model so all subagents run on the same model.
         model_settings: Default model configuration for all agents.
             Individual nodes can override this with their own model_settings.
             Example: {"model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0"}
