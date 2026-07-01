@@ -39,9 +39,9 @@ from tools.browser.desktop_cdp_browser import DesktopCDPBrowser
 import strands_tools.devops.shell as _m_shell
 import strands_tools.devops.editor as _m_editor
 import strands_tools.devops.environment as _m_environment
-import strands_tools.agent_orchestration.mem0_memory as _m_mem0
 import strands_tools.agent_orchestration.graph as _m_graph
-import strands_tools.agent_orchestration.use_agent as _m_use_agent
+import strands_tools.agent_orchestration.mcp_client as _m_mcp_client
+import strands_tools.devops.http_request as _m_http_request
 import strands_tools.research.perplexity_search_api as _m_perplexity_search
 import strands_tools.research.perplexity_deep_research as _m_perplexity_deep
 from server import tool_catalog_support
@@ -89,13 +89,17 @@ BASELINE_TOOL_MODULES = (
     _m_shell,
     _m_editor,
     _m_environment,
-    _m_mem0,
     _m_graph,
-    _m_use_agent,
+    _m_mcp_client,
     _m_perplexity_search,
     _m_perplexity_deep,
     _m_virtual_desktop,
 )
+
+# Module-based tools (``TOOL_SPEC`` + function, not ``@tool``-decorated). These
+# are registered by handing the module itself to ``Agent(tools=[...])`` rather
+# than picked up by ``_tools_in`` (which only matches DecoratedFunctionTool).
+BASELINE_TOOL_MODULE_TOOLS = (_m_http_request,)
 
 
 def _tools_in(module: Any) -> list[Any]:
@@ -136,6 +140,9 @@ def build_baseline_tools(session_id: str | None = None) -> list[Any]:
     tools: list[Any] = []
     for module in BASELINE_TOOL_MODULES:
         tools.extend(_tools_in(module))
+    # Module-based tools are registered by passing the module object itself;
+    # ``Agent(tools=[...])`` loads its TOOL_SPEC + function via the loader.
+    tools.extend(BASELINE_TOOL_MODULE_TOOLS)
     tools.append(_browser_tool())
     return tools
 DEFAULT_AGENT_ID = "provider-research-agent"

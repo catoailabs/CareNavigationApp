@@ -25,7 +25,7 @@ import {
   UserIcon,
   WrenchIcon,
 } from "lucide-react";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useRef } from "react";
 
 import { Agent, AgentContent, AgentHeader, AgentInstructions } from "./agent";
 import {
@@ -33,12 +33,6 @@ import {
   GraphWorkflow,
   type GraphEvent,
 } from "./graph-workflow";
-import {
-  JSXPreview,
-  JSXPreviewContent,
-  JSXPreviewError,
-} from "./jsx-preview";
-import type { TProps as JsxParserProps } from "react-jsx-parser";
 import {
   Attachment,
   AttachmentInfo,
@@ -596,6 +590,17 @@ function GraphWorkflowTool({
   isStreaming: boolean;
 }) {
   const state = useMemo(() => foldGraphEvents(events), [events]);
+  // Stabilize the folded-state identity. `events` is a fresh array on every
+  // streamed render, so `state` would otherwise get a new identity each time and
+  // force the memoized GraphWorkflow (and its React Flow canvas) to re-render
+  // ~20x/sec even after the DAG stops changing. Keep the previous object while
+  // the content signature is unchanged so re-renders only happen on real change.
+  const signature = JSON.stringify(state);
+  const stableRef = useRef({ signature, state });
+  if (stableRef.current.signature !== signature) {
+    stableRef.current = { signature, state };
+  }
+  const stableState = stableRef.current.state;
 
   return (
     <ChainOfThoughtStep
@@ -603,18 +608,17 @@ function GraphWorkflowTool({
       label="Agent Graph"
       status={isComplete ? "complete" : "active"}
     >
-      <JSXPreview
-        bindings={{ graph: state, streaming: isStreaming }}
-        className="mt-2 ml-1"
-        components={{
-          GraphWorkflow: GraphWorkflow,
-        } as unknown as JsxParserProps["components"]}
-        isStreaming={isStreaming}
-        jsx="<GraphWorkflow data={graph} isStreaming={streaming} />"
-      >
-        <JSXPreviewContent />
-        <JSXPreviewError />
-      </JSXPreview>
+      {/*
+        Render the graph directly. Going through JSXPreview/react-jsx-parser
+        re-parsed a constant JSX string on every streamed update and remounted
+        the React Flow canvas each time, leaking native resources
+        (ResizeObserver / RAF handles) until the renderer OOM'd right after the
+        graph appeared. GraphWorkflow is a fixed component with props — there is
+        no model-authored JSX here to parse.
+      */}
+      <div className="mt-2 ml-1">
+        <GraphWorkflow data={stableState} isStreaming={isStreaming} />
+      </div>
     </ChainOfThoughtStep>
   );
 }

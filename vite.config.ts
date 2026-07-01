@@ -39,14 +39,18 @@ export default defineConfig({
       ],
     },
     proxy: {
-      // Proxy to Chrome DevTools Protocol for real tab access
+      // Proxy to Chrome DevTools Protocol for real tab access.
+      // The agent-desktop container publishes only the CDP forwarder port 9223
+      // (0.0.0.0:9223 -> 127.0.0.1:9222 inside the container); Chromium's raw
+      // 9222 is loopback-only and never published. Point the proxy at 9223 so
+      // the frontend tab-bridge and the host agent both reach CDP the same way.
       '/api/chrome-tabs': {
-        target: 'http://localhost:9222',
+        target: 'http://localhost:9223',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/chrome-tabs/, '/json'),
       },
       '/api/chrome-ws': {
-        target: 'ws://localhost:9222',
+        target: 'ws://localhost:9223',
         ws: true,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/chrome-ws/, ''),

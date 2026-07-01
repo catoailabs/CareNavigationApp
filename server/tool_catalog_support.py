@@ -4,11 +4,14 @@ import ast
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from strands import Agent
+from strands._async import run_async
+from strands.tools.loader import load_tool_from_string
 from strands.tools.registry import ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
@@ -720,10 +723,80 @@ def unload_tool(agent: Agent, tool_name: str) -> None:
     registry.dynamic_tools.pop(tool_name, None)
 
 
-def _execute_loaded_tool(agent: Agent, tool_name: str, arguments: dict[str, Any]) -> Any:
-    method_name = tool_name.replace("-", "_")
-    caller = getattr(agent.tool, method_name)
-    return caller(**arguments)
+def _load_tool_object(name: str, load_spec: str | None) -> Any:
+    """Resolve a catalog tool to a live ``AgentTool`` object via the Strands
+    loader **without registering it on any agent**.
+
+    ``load_tool_from_string`` imports the module (or file) and returns the
+    ``@tool``/module-based tool objects it finds; it never mutates an agent's
+    ``tool_registry``. We then pick the one matching ``name``.
+    """
+    if not load_spec:
+        raise ValueError(f"No load spec for tool: {name}")
+    candidates = load_tool_from_string(load_spec)
+    for candidate in candidates:
+        if getattr(candidate, "tool_name", None) == name:
+            return candidate
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ValueError(f"Tool '{name}' not found in load spec '{load_spec}'")
+
+
+def _resolve_tool_object(agent: Agent | None, name: str | None) -> Any:
+    """Return a callable ``AgentTool`` for ``name`` without loading it into the
+    agent registry.
+
+    If the tool is already registered (a baseline tool, or one persistently
+    loaded via ``load_catalog_tool``) we reuse that live object. Otherwise we
+    import it transiently via the loader — the agent's registry is never
+    touched, so concurrent executes can never race on load/unload.
+    """
+    if not name:
+        raise ValueError("name is required")
+    if agent is not None and _is_tool_loaded(agent, name):
+        for tool_obj in list(agent.tool_registry.registry.values()):
+            if getattr(tool_obj, "tool_name", None) == name:
+                return tool_obj
+    entry = _tool_entry(agent, name)
+    if entry is None:
+        raise ValueError(f"Tool not found: {name}")
+    if entry.kind != "tool":
+        raise ValueError(f"Catalog entry is not a tool: {name}")
+    return _load_tool_object(name, entry.load_spec or entry.path)
+
+
+def _invoke_tool_object(agent: Agent | None, tool_obj: Any, arguments: dict[str, Any]) -> Any:
+    """Invoke a tool object directly and return its ``ToolResult``.
+
+    Uses the tool's own ``stream`` protocol (input validation + special-param
+    injection, e.g. ``agent``) exactly as the event loop would, but on an
+    unregistered object and in an isolated thread via ``run_async`` so it is
+    safe to call while the parent agent is mid-invocation. No direct
+    ``agent.tool.X`` call, no concurrency lock, no registry mutation.
+    """
+    tool_name = getattr(tool_obj, "tool_name", "tool")
+    tool_use = {
+        "toolUseId": f"catalog_{uuid.uuid4().hex}",
+        "name": tool_name,
+        "input": dict(arguments or {}),
+    }
+    invocation_state: dict[str, Any] = {}
+    if agent is not None:
+        invocation_state["agent"] = agent
+
+    async def _run() -> Any:
+        final_event: Any = None
+        async for event in tool_obj.stream(tool_use, invocation_state):
+            final_event = event
+        return final_event
+
+    final_event = run_async(_run)
+    if final_event is None:
+        raise RuntimeError(f"Tool '{tool_name}' produced no result")
+    tool_result = getattr(final_event, "tool_result", None)
+    if tool_result is None and isinstance(final_event, dict):
+        tool_result = final_event.get("tool_result", final_event)
+    return tool_result
 
 
 def _resolve_catalog_tool(agent: Agent | None, name: str | None) -> CatalogEntry:
@@ -801,18 +874,14 @@ def execute_result(
         tool_name = invocation.get("name")
         tool_arguments = invocation.get("arguments") or {}
         try:
-            entry = _resolve_catalog_tool(agent, tool_name)
-            loaded_here = False
-            if not _is_tool_loaded(agent, entry.name):
-                _load_tool(agent, entry.name, entry.load_spec)
-                loaded_here = True
-            try:
-                result = _execute_loaded_tool(agent, entry.name, tool_arguments)
-                any_success = True
-                results.append({"name": entry.name, "result": result})
-            finally:
-                if loaded_here:
-                    unload_tool(agent, entry.name)
+            # Import-and-call the tool directly. The tool is NEVER loaded into
+            # the agent registry — no process_tools, no unload, no concurrency
+            # hazard. Subagent-formation tools (graph/use_agent) are baseline
+            # tools and are not routed through here.
+            tool_obj = _resolve_tool_object(agent, tool_name)
+            result = _invoke_tool_object(agent, tool_obj, tool_arguments)
+            any_success = True
+            results.append({"name": getattr(tool_obj, "tool_name", tool_name), "result": result})
         except Exception as exc:
             results.append({"name": tool_name, "error": str(exc)})
 

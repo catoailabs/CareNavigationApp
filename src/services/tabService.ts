@@ -9,7 +9,8 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // Fetches real browser tab data from Chrome's DevTools Protocol endpoint.
 // Requires Chrome to be started with: --remote-debugging-port=9222
-// The Vite dev server proxies /api/chrome-tabs → http://localhost:9222/json
+// The Vite dev server proxies /api/chrome-tabs → the CDP forwarder
+// (http://localhost:9223 → 127.0.0.1:9222 inside the desktop container) /json
 
 export interface ChromeTab {
   id: string
@@ -25,6 +26,18 @@ export interface ChromeTab {
 interface ExtractedTabContext {
   pageContent?: string
   navigationInfo?: ContextItem['navigationInfo']
+}
+
+// Rewrite a CDP webSocketDebuggerUrl to route through the Vite/nginx proxy.
+// Chromium reports the ws origin using whatever Host header it saw on the /json
+// request, which depends on the proxy target (localhost:9222 direct, or
+// localhost:9223 via the forwarder). Strip the origin host-agnostically and
+// point every socket at our /api/chrome-ws proxy path.
+function proxyWebSocketUrl(webSocketDebuggerUrl: string): string {
+  return webSocketDebuggerUrl.replace(
+    /^ws:\/\/[^/]+/,
+    `ws://${window.location.host}/api/chrome-ws`,
+  )
 }
 
 // Fetch all open Chrome tabs via CDP
@@ -46,8 +59,7 @@ async function captureTabScreenshot(tab: ChromeTab): Promise<string | null> {
 
   try {
     // Rewrite the WebSocket URL to go through our proxy
-    const wsUrl = tab.webSocketDebuggerUrl
-      .replace('ws://localhost:9222', `ws://${window.location.host}/api/chrome-ws`)
+    const wsUrl = proxyWebSocketUrl(tab.webSocketDebuggerUrl)
 
     return new Promise<string | null>((resolve) => {
       const ws = new WebSocket(wsUrl)
@@ -94,8 +106,7 @@ async function getTabContext(tab: ChromeTab): Promise<ExtractedTabContext | null
   if (!tab.webSocketDebuggerUrl) return null
 
   try {
-    const wsUrl = tab.webSocketDebuggerUrl
-      .replace('ws://localhost:9222', `ws://${window.location.host}/api/chrome-ws`)
+    const wsUrl = proxyWebSocketUrl(tab.webSocketDebuggerUrl)
 
     return new Promise<ExtractedTabContext | null>((resolve) => {
       const ws = new WebSocket(wsUrl)

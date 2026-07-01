@@ -114,6 +114,12 @@ type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   showLineNumbers?: boolean;
 };
 
+// Upper bound on the number of characters actually highlighted and rendered.
+// Shiki emits one <span> per token, so an unbounded tool-result/JSON dump can
+// balloon a single block into tens of thousands of DOM nodes and hang the tab.
+// The full text is still preserved for the Copy button (see CodeBlockContext).
+const MAX_RENDERED_CODE_CHARS = 4000;
+
 interface TokenizedCode {
   tokens: ThemedToken[][];
   fg: string;
@@ -442,12 +448,22 @@ export const CodeBlock = ({
 
   const contextValue = useMemo(() => ({ code: safeCode }), [safeCode]);
 
+  // Render at most MAX_RENDERED_CODE_CHARS to keep the highlighted DOM bounded.
+  // Copy still yields the full text via contextValue above.
+  const displayCode = useMemo(() => {
+    if (safeCode.length <= MAX_RENDERED_CODE_CHARS) {
+      return safeCode;
+    }
+    const hidden = safeCode.length - MAX_RENDERED_CODE_CHARS;
+    return `${safeCode.slice(0, MAX_RENDERED_CODE_CHARS)}\n\n… [${hidden.toLocaleString()} more characters truncated for display — use Copy for the full content]`;
+  }, [safeCode]);
+
   return (
     <CodeBlockContext.Provider value={contextValue}>
       <CodeBlockContainer className={className} language={language} {...props}>
         {children}
         <CodeBlockContent
-          code={safeCode}
+          code={displayCode}
           language={language}
           showLineNumbers={showLineNumbers}
         />
