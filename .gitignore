@@ -25,8 +25,11 @@ dist-ssr
 /.env
 /deploy/.env
 __pycache__/
-.venv*/
-# Python virtual environment (no leading dot) — multi-GB CUDA/torch libs, never commit.
+# Python virtual environments — every variant. `.venv*` (no trailing slash) also
+# catches the tracked `.venv` symlink and stray `.venv.broken-*` links, which
+# `.venv*/` (directories only) missed. `venv/` (no leading dot) held multi-GB
+# CUDA/torch libs; never commit any of these.
+.venv*
 venv/
 .strands-sessions/
 .runtime/
