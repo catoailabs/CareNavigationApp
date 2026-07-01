@@ -44,6 +44,13 @@ class BuildAgentTests(unittest.TestCase):
         self.assertNotIn("tool_executor", built)
         self.assertNotIn("session_manager", built)
 
+    def test_baseline_tools_include_stock_browser_tool(self) -> None:
+        """The ``browser`` tool (DesktopCDPBrowser, attached to the desktop
+        Chromium over CDP) is registered."""
+        tools = agent.build_baseline_tools()
+        names = {getattr(t, "tool_name", getattr(t, "__name__", "")) for t in tools}
+        self.assertIn("browser", names)
+
 
 class UIMessageConversionTests(unittest.TestCase):
     def test_parts_are_converted_to_strands_messages(self) -> None:

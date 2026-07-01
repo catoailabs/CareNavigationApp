@@ -1295,6 +1295,27 @@ function BrowserTool({
     ) || nameLower === "browser";
   const title = args.project_name || args.app_name || args.action || toolName;
 
+  // Derive the page URL for the WebPreview embed (web-preview.tsx). The stock
+  // strands ``browser`` tool doesn't return a ``url`` field, so fall back to the
+  // navigate action's URL from the tool input, then to a URL parsed out of the
+  // result text (e.g. "Navigated to https://example.com").
+  const resultText =
+    typeof result?.text === "string"
+      ? result.text
+      : Array.isArray(result?.content)
+        ? result.content
+            .map((b: Record<string, unknown>) =>
+              typeof b?.text === "string" ? b.text : ""
+            )
+            .join(" ")
+        : "";
+  const pageUrl: string | undefined =
+    result?.url ||
+    result?.current_url ||
+    args?.browser_input?.action?.url ||
+    args?.url ||
+    resultText.match(/https?:\/\/[^\s"']+/)?.[0];
+
   return (
     <ChainOfThoughtStep
       icon={GlobeIcon}
@@ -1308,25 +1329,25 @@ function BrowserTool({
               {title}
             </ArtifactTitle>
             <ArtifactDescription className="text-xs text-muted-foreground">
-              {isCDPManaged ? "Active Session" : "Generated View"}
+              {pageUrl ? "Web Preview" : isCDPManaged ? "Active Session" : "Generated View"}
             </ArtifactDescription>
           </div>
         </ArtifactHeader>
         <ArtifactContent className="h-[400px] overflow-hidden p-0">
-          {isCDPManaged ? (
+          {pageUrl ? (
+            <WebPreview defaultUrl={pageUrl}>
+              <WebPreviewNavigation>
+                <WebPreviewUrl />
+              </WebPreviewNavigation>
+              <WebPreviewBody />
+            </WebPreview>
+          ) : isCDPManaged ? (
             <iframe
               allow="clipboard-read; clipboard-write; display-capture"
               className="h-full w-full select-none border-0 bg-black"
               src={AGENT_BROWSER_DESKTOP_URL}
               title="Agent Browser (Virtual Desktop)"
             />
-          ) : isComplete && result?.url ? (
-            <WebPreview defaultUrl={result.url}>
-              <WebPreviewNavigation>
-                <WebPreviewUrl />
-              </WebPreviewNavigation>
-              <WebPreviewBody />
-            </WebPreview>
           ) : (
             <div className="flex h-full items-center justify-center p-4 font-mono text-sm text-muted-foreground">
               {isComplete
@@ -1479,7 +1500,7 @@ function FallbackTool({
   );
 }
 
-function ToolStep({
+const ToolStep = memo(function ToolStep({
   part,
   graphEvents,
   isStreaming = false,
@@ -1637,9 +1658,20 @@ function ToolStep({
       toolName={toolName}
     />
   );
-}
+},
+(prev, next) =>
+  // A completed step is frozen, so skip re-rendering (and re-highlighting its
+  // code blocks) unless its own content, terminal state, or streaming flag
+  // actually changed. This keeps a long transcript from re-highlighting every
+  // prior tool output on each streamed token.
+  prev.isStreaming === next.isStreaming &&
+  prev.graphEvents === next.graphEvents &&
+  prev.part.toolCallId === next.part.toolCallId &&
+  prev.part.state === next.part.state &&
+  prev.part.input === next.part.input &&
+  prev.part.output === next.part.output);
 
-function ReasoningStep({
+const ReasoningStep = memo(function ReasoningStep({
   text,
   isStreaming,
 }: {
@@ -1652,7 +1684,7 @@ function ReasoningStep({
       <ReasoningContent>{text}</ReasoningContent>
     </Reasoning>
   );
-}
+});
 
 function MessageSources({
   parts,

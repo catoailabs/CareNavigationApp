@@ -155,6 +155,10 @@ services:
       - openemr
     ports:
       - "3001:3000"
+      # CDP forwarder → the desktop's live Chromium. The agent (running on the
+      # host in dev) connects here via AGENT_DESKTOP_CDP_URL (default
+      # http://localhost:9223). Never publish the raw 9222 CDP port.
+      - "9223:9223"
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
@@ -167,6 +171,7 @@ services:
       PILLAR6_REMOTE_RUNTIME: "1"
       PILLAR6_BROWSER_APP_NAME: chromium
       PILLAR6_BROWSER_DEBUG_PORT: "9222"
+      PILLAR6_BROWSER_FORWARD_PORT: "9223"
       PILLAR6_BROWSER_PROFILE: /workspace/.runtime/browser-profile
       PILLAR6_BROWSER_START_URL: ${PILLAR6_BROWSER_START_URL:-http://openemr}
       PILLAR6_EXEC_SERVICE: agent-exec

@@ -6,8 +6,8 @@
 # Exposure model (security):
 #   - web           : published (the only public entrypoint by default)
 #   - agent         : internal only  (FastAPI :8000 never published)
-#   - agent-desktop : Chromium CDP :9222 internal only; webtop GUI :3000 published
-#                     on DESKTOP_PORT behind built-in basic auth.
+#   - agent-desktop : Chromium CDP :9222 + :9223 forwarder internal only; webtop
+#                     GUI :3000 published on DESKTOP_PORT behind built-in basic auth.
 
 name: care-navigation
 
@@ -58,6 +58,11 @@ services:
       STRANDS_AGENT_RELOAD: "0"
       BYPASS_TOOL_CONSENT: "true"
       FIREBASE_AUTH_DISABLED: "${FIREBASE_AUTH_DISABLED:-false}"
+      # The `browser` tool (DesktopCDPBrowser) attaches over CDP to the live
+      # Chromium on the agent-desktop container via its 9223 forwarder. The
+      # subclass resolves this hostname → IP before connecting so Chromium's
+      # CDP Host-header check (which rejects bare hostnames) passes.
+      AGENT_DESKTOP_CDP_URL: "http://agent-desktop:9223"
     expose:
       - "8000"
     volumes:
@@ -87,10 +92,15 @@ services:
       PILLAR6_BROWSER_APP_NAME: "chromium"
       PILLAR6_BROWSER_DEBUG_PORT: "9222"
       PILLAR6_BROWSER_DEBUG_ADDRESS: "0.0.0.0"
+      # Chromium binds CDP to loopback only (ignores DEBUG_ADDRESS), so a stdlib
+      # TCP forwarder re-exposes it on 9223 for the agent container to reach over
+      # the internal network. Never publish 9222/9223 to the host.
+      PILLAR6_BROWSER_FORWARD_PORT: "9223"
       PILLAR6_BROWSER_PROFILE: "/workspace/.runtime/browser-profile"
       PILLAR6_BROWSER_START_URL: "${DESKTOP_START_URL:-https://www.google.com}"
     expose:
       - "9222"
+      - "9223"
     ports:
       - "${DESKTOP_PORT:-3001}:3000"
     volumes:

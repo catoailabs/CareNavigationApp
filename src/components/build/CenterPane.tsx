@@ -22,7 +22,7 @@ import {
   AttachmentInfo,
   AttachmentPreview,
 } from '@/components/ai-elements/attachments'
-import { StrandsChainOfThought } from '@/components/ai-elements/strands-chain-of-thought'
+import { MemoizedStrandsChainOfThought } from '@/components/ai-elements/strands-chain-of-thought'
 import { cn } from '@/utils/cn'
 import type {
   ProviderChatMessage,
@@ -134,6 +134,11 @@ function UserMessage({ message }: { message: ProviderChatMessage }) {
 
 function ActiveChat({ sessionId }: { sessionId: string }) {
   const { messages, sendMessage, status, stop } = useChat<ProviderChatMessage>({
+    // Throttle UI updates so a fast token stream doesn't re-render (and
+    // re-highlight) the entire growing transcript on every SSE frame. Without
+    // this, a long multi-agent run re-renders megabytes of markdown/code many
+    // times per second and the renderer OOMs. ~50ms batches updates to ~20fps.
+    experimental_throttle: 50,
     transport: new DefaultChatTransport({
       api: '/api/chat',
       headers: authHeaders,
@@ -203,17 +208,26 @@ function ActiveChat({ sessionId }: { sessionId: string }) {
           )}
         >
           <div className="space-y-8">
-            {messages.map(message => (
-              <div key={message.id}>
-                {message.role === 'user' ? (
-                  <UserMessage message={message} />
-                ) : message.role === 'assistant' ? (
-                  <AssistantChrome>
-                    <StrandsChainOfThought message={message} isStreaming={isStreaming} />
-                  </AssistantChrome>
-                ) : null}
-              </div>
-            ))}
+            {messages.map((message, index) => {
+              // Only the final message can be streaming; marking earlier,
+              // already-complete messages as streaming (or re-rendering them at
+              // all) forces needless re-highlighting of finished content.
+              const isLastMessage = index === messages.length - 1
+              return (
+                <div key={message.id}>
+                  {message.role === 'user' ? (
+                    <UserMessage message={message} />
+                  ) : message.role === 'assistant' ? (
+                    <AssistantChrome>
+                      <MemoizedStrandsChainOfThought
+                        message={message}
+                        isStreaming={isStreaming && isLastMessage}
+                      />
+                    </AssistantChrome>
+                  ) : null}
+                </div>
+              )
+            })}
           </div>
         </div>
 

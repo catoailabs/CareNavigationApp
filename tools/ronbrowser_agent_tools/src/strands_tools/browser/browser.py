@@ -14,13 +14,11 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
-# nest_asyncio REMOVED - incompatible with Python 3.14+
+import nest_asyncio
 from playwright.async_api import Browser as PlaywrightBrowser
 from playwright.async_api import Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from strands import tool
-
-from strands_tools.utils.image_processing import cache_image_bytes, compress_image_bytes, load_screenshot_config
 
 from .models import (
     BackAction,
@@ -58,11 +56,19 @@ class Browser(ABC):
     def __init__(self):
         self._started = False
         self._playwright = None
-        # Private event loop REMOVED - now uses caller's loop (Python 3.14+ compatible)
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._nest_asyncio_applied = False
         self._sessions: Dict[str, BrowserSession] = {}
+        # Subclasses may populate this (e.g. LocalChromiumBrowser does
+        # from its context_options constructor arg). It is unpacked into
+        # every new browser context created by _setup_session_from_browser
+        # so things like viewport, user_agent, storage_state, locale etc.
+        # round-trip through the public API. See strands-agents/tools#414.
+        self._default_context_options: Dict[str, Any] = {}
 
     @tool
-    async def browser(self, browser_input: BrowserInput) -> Dict[str, Any]:
+    def browser(self, browser_input: BrowserInput) -> Dict[str, Any]:
         """
         Browser automation tool for web scraping, testing, and automation tasks.
 
@@ -118,10 +124,9 @@ class Browser(ABC):
         Returns:
             Dict containing execution results.
         """
-        # Auto-start platform on first use (must call awaitable _start from async context)
-        # NOTE: This now requires the caller to be async-aware (e.g., Strands stream_async)
+        # Auto-start platform on first use
         if not self._started:
-            await self._start()
+            self._start()
 
         if isinstance(browser_input, dict):
             logger.debug("Action was passed as Dict, mapping to BrowserInput type action")
@@ -131,76 +136,84 @@ class Browser(ABC):
 
         logger.debug(f"processing browser action {type(action)}")
 
-        # Delegate to specific action handlers (all now async)
+        # Delegate to specific action handlers
         if isinstance(action, InitSessionAction):
-            return await self.init_session(action)
+            return self.init_session(action)
         elif isinstance(action, ListLocalSessionsAction):
-            return self.list_local_sessions()  # This one is sync (no I/O)
+            return self.list_local_sessions()
         elif isinstance(action, NavigateAction):
-            return await self.navigate(action)
+            return self.navigate(action)
         elif isinstance(action, ClickAction):
-            return await self.click(action)
+            return self.click(action)
         elif isinstance(action, TypeAction):
-            return await self.type(action)
+            return self.type(action)
         elif isinstance(action, GetTextAction):
-            return await self.get_text(action)
+            return self.get_text(action)
         elif isinstance(action, GetHtmlAction):
-            return await self.get_html(action)
+            return self.get_html(action)
         elif isinstance(action, ScreenshotAction):
-            return await self.screenshot(action)
+            return self.screenshot(action)
         elif isinstance(action, NewTabAction):
-            return await self.new_tab(action)
+            return self.new_tab(action)
         elif isinstance(action, SwitchTabAction):
-            return await self.switch_tab(action)
+            return self.switch_tab(action)
         elif isinstance(action, CloseTabAction):
-            return await self.close_tab(action)
+            return self.close_tab(action)
         elif isinstance(action, ListTabsAction):
-            return await self.list_tabs(action)
+            return self.list_tabs(action)
         elif isinstance(action, BackAction):
-            return await self.back(action)
+            return self.back(action)
         elif isinstance(action, ForwardAction):
-            return await self.forward(action)
+            return self.forward(action)
         elif isinstance(action, RefreshAction):
-            return await self.refresh(action)
+            return self.refresh(action)
         elif isinstance(action, EvaluateAction):
-            return await self.evaluate(action)
+            return self.evaluate(action)
         elif isinstance(action, GetCookiesAction):
-            return await self.get_cookies(action)
+            return self.get_cookies(action)
         elif isinstance(action, SetCookiesAction):
-            return await self.set_cookies(action)
+            return self.set_cookies(action)
         elif isinstance(action, NetworkInterceptAction):
-            return await self.network_intercept(action)
+            return self.network_intercept(action)
         elif isinstance(action, ExecuteCdpAction):
-            return await self.execute_cdp(action)
+            return self.execute_cdp(action)
         elif isinstance(action, PressKeyAction):
-            return await self.press_key(action)
+            return self.press_key(action)
         elif isinstance(action, CloseAction):
-            return await self.close(action)
+            return self.close(action)
         else:
             return {"status": "error", "content": [{"text": f"Unknown action type: {type(action)}"}]}
 
-    async def _start(self) -> None:
-        """Start the platform and initialize any required connections (ASYNC)."""
+    def _start(self) -> None:
+        """Start the platform and initialize any required connections."""
         if not self._started:
-            self._playwright = await async_playwright().start()
-            await self.start_platform()
+            self._playwright = self._execute_async(async_playwright().start())
+            self.start_platform()
             self._started = True
 
-    async def _cleanup(self) -> None:
-        """Clean up platform resources and connections (ASYNC)."""
+    def _cleanup(self) -> None:
+        """Clean up platform resources and connections."""
         if self._started:
-            await self._async_cleanup()
+            self._execute_async(self._async_cleanup())
             self._started = False
 
+    def __del__(self):
+        """Cleanup: Clear platform resources when tool is destroyed."""
+        try:
+            logger.debug("browser tool destructor called - cleaning up platform")
+            self._cleanup()
+            logger.debug("platform cleanup completed successfully")
+        except Exception as e:
+            logger.debug("exception=<%s> | platform cleanup during destruction skipped", str(e))
 
     @abstractmethod
-    async def start_platform(self) -> None:
-        """Initialize platform-specific resources and establish browser connection (ASYNC)."""
+    def start_platform(self) -> None:
+        """Initialize platform-specific resources and establish browser connection."""
         ...
 
     @abstractmethod
-    async def close_platform(self) -> None:
-        """Close platform-specific resources (ASYNC)."""
+    def close_platform(self) -> None:
+        """Close platform-specific resources."""
         ...
 
     @abstractmethod
@@ -229,9 +242,13 @@ class Browser(ABC):
             Tuple of (browser, context, page)
         """
         if isinstance(browser_or_context, PlaywrightBrowser):
-            # Normal non-persistent case
+            # Normal non-persistent case. Pass through the configured
+            # context options (viewport, user_agent, storage_state,
+            # locale, timezone, permissions, ...) so values supplied
+            # to the browser subclass's constructor actually take
+            # effect. See strands-agents/tools#414.
             session_browser = browser_or_context
-            session_context = await session_browser.new_context()
+            session_context = await session_browser.new_context(**self._default_context_options)
             session_page = await session_context.new_page()
         else:
             # Persistent context case
@@ -242,11 +259,9 @@ class Browser(ABC):
         return session_browser, session_context, session_page
 
     # Session Management Methods
-    async def init_session(self, action: InitSessionAction) -> Dict[str, Any]:
-        """Initialize a new browser session (ASYNC)."""
-        if not self._started:
-            await self._start()
-        return await self._async_init_session(action)
+    def init_session(self, action: InitSessionAction) -> Dict[str, Any]:
+        """Initialize a new browser session."""
+        return self._execute_async(self._async_init_session(action))
 
     async def _async_init_session(self, action: InitSessionAction) -> Dict[str, Any]:
         """Async initialize session implementation."""
@@ -318,49 +333,23 @@ class Browser(ABC):
             ],
         }
 
-    def get_default_session_name(self) -> Optional[str]:
-        """Get the default session name (first session in registry)."""
-        if self._sessions:
-            return next(iter(self._sessions.keys()))
-        return None
-
-    def has_session(self, session_name: str) -> bool:
-        """Check if a session exists by name."""
-        return session_name in self._sessions
-
-    def resolve_session_name(self, session_name: Optional[str]) -> str:
-        """Resolve session name, using default if not provided."""
-        if session_name:
-            return session_name
-        default = self.get_default_session_name()
-        if default:
-            logger.info(f"Using default session: {default}")
-            return default
-        return ""
-
     def get_session_page(self, session_name: str) -> Optional[Page]:
         """Get the active page for a session."""
-        resolved = self.resolve_session_name(session_name)
-        session = self._sessions.get(resolved)
+        session = self._sessions.get(session_name)
         if session:
             return session.get_active_page()
         return None
 
     def validate_session(self, session_name: str) -> Optional[Dict[str, Any]]:
         """Validate that a session exists and return error response if not."""
-        resolved = self.resolve_session_name(session_name)
-        if not resolved or resolved not in self._sessions:
-            available = list(self._sessions.keys()) if self._sessions else []
-            return {
-                "status": "error", 
-                "content": [{"text": f"Session '{session_name}' not found. Available: {available}"}]
-            }
+        if session_name not in self._sessions:
+            return {"status": "error", "content": [{"text": f"Session '{session_name}' not found"}]}
         return None
 
     # Shared browser action implementations
-    async def navigate(self, action: NavigateAction) -> Dict[str, Any]:
-        """Navigate to a URL (ASYNC)."""
-        return await self._async_navigate(action)
+    def navigate(self, action: NavigateAction) -> Dict[str, Any]:
+        """Navigate to a URL."""
+        return self._execute_async(self._async_navigate(action))
 
     async def _async_navigate(self, action: NavigateAction) -> Dict[str, Any]:
         """Async navigate implementation."""
@@ -376,13 +365,8 @@ class Browser(ABC):
             return {"status": "error", "content": [{"text": "Error: No active page for session"}]}
 
         try:
-            await page.goto(action.url, timeout=30000)  # 30s timeout for initial load
-            # Use domcontentloaded instead of networkidle - networkidle hangs forever
-            # on modern sites with constant network activity (analytics, ads, websockets)
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=5000)
-            except PlaywrightTimeoutError:
-                logger.debug("domcontentloaded timeout - page may still be loading dynamic content")
+            await page.goto(action.url)
+            await page.wait_for_load_state("networkidle")
             return {"status": "success", "content": [{"text": f"Navigated to {action.url}"}]}
         except Exception as e:
             error_str = str(e)
@@ -409,9 +393,9 @@ class Browser(ABC):
                 error_msg = str(e)
             return {"status": "error", "content": [{"text": f"Error: {error_msg}"}]}
 
-    async def click(self, action: ClickAction) -> Dict[str, Any]:
-        """Click on an element (ASYNC)."""
-        return await self._async_click(action)
+    def click(self, action: ClickAction) -> Dict[str, Any]:
+        """Click on an element."""
+        return self._execute_async(self._async_click(action))
 
     async def _async_click(self, action: ClickAction) -> Dict[str, Any]:
         """Async click implementation."""
@@ -431,9 +415,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | click action failed on selector '%s'", str(e), action.selector)
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def type(self, action: TypeAction) -> Dict[str, Any]:
-        """Type text into an element (ASYNC)."""
-        return await self._async_type(action)
+    def type(self, action: TypeAction) -> Dict[str, Any]:
+        """Type text into an element."""
+        return self._execute_async(self._async_type(action))
 
     async def _async_type(self, action: TypeAction) -> Dict[str, Any]:
         """Async type implementation."""
@@ -453,9 +437,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | type action failed on selector '%s'", str(e), action.selector)
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def evaluate(self, action: EvaluateAction) -> Dict[str, Any]:
-        """Execute JavaScript code (ASYNC)."""
-        return await self._async_evaluate(action)
+    def evaluate(self, action: EvaluateAction) -> Dict[str, Any]:
+        """Execute JavaScript code."""
+        return self._execute_async(self._async_evaluate(action))
 
     async def _async_evaluate(self, action: EvaluateAction) -> Dict[str, Any]:
         """Async evaluate implementation."""
@@ -526,9 +510,9 @@ class Browser(ABC):
 
         return fixed_script
 
-    async def press_key(self, action: PressKeyAction) -> Dict[str, Any]:
-        """Press a keyboard key (ASYNC)."""
-        return await self._async_press_key(action)
+    def press_key(self, action: PressKeyAction) -> Dict[str, Any]:
+        """Press a keyboard key."""
+        return self._execute_async(self._async_press_key(action))
 
     async def _async_press_key(self, action: PressKeyAction) -> Dict[str, Any]:
         """Async press key implementation."""
@@ -548,9 +532,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | press key action failed for key '%s'", str(e), action.key)
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def get_text(self, action: GetTextAction) -> Dict[str, Any]:
-        """Get text content from an element (ASYNC)."""
-        return await self._async_get_text(action)
+    def get_text(self, action: GetTextAction) -> Dict[str, Any]:
+        """Get text content from an element."""
+        return self._execute_async(self._async_get_text(action))
 
     async def _async_get_text(self, action: GetTextAction) -> Dict[str, Any]:
         """Async get text implementation."""
@@ -570,9 +554,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | get text action failed on selector '%s'", str(e), action.selector)
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def get_html(self, action: GetHtmlAction) -> Dict[str, Any]:
-        """Get HTML content (ASYNC)."""
-        return await self._async_get_html(action)
+    def get_html(self, action: GetHtmlAction) -> Dict[str, Any]:
+        """Get HTML content."""
+        return self._execute_async(self._async_get_html(action))
 
     async def _async_get_html(self, action: GetHtmlAction) -> Dict[str, Any]:
         """Async get HTML implementation."""
@@ -617,10 +601,10 @@ class Browser(ABC):
             logger.debug("exception=<%s> | get HTML action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def screenshot(self, action: ScreenshotAction) -> Dict[str, Any]:
-        """Take a screenshot (ASYNC)."""
+    def screenshot(self, action: ScreenshotAction) -> Dict[str, Any]:
+        """Take a screenshot."""
         logger.debug(f"Trying to screenshot {action}")
-        return await self._async_screenshot(action)
+        return self._execute_async(self._async_screenshot(action))
 
     async def _async_screenshot(self, action: ScreenshotAction) -> Dict[str, Any]:
         """Async screenshot implementation."""
@@ -635,65 +619,27 @@ class Browser(ABC):
             return {"status": "error", "content": [{"text": "Error: No active page for session"}]}
 
         try:
-            config = load_screenshot_config()
-            capture_quality = action.quality or config.jpeg_quality
-            screenshot_options = {
-                "type": "jpeg",
-                "full_page": action.full_page or False,
-                "quality": capture_quality,
-            }
+            screenshots_dir = os.getenv("STRANDS_BROWSER_SCREENSHOTS_DIR", "screenshots")
+            os.makedirs(screenshots_dir, exist_ok=True)
 
-            logger.debug(f"About to take screenshot with options: {screenshot_options}")
-
-            # Capture to MEMORY (no path parameter) - returns bytes
-            screenshot_bytes = await page.screenshot(**screenshot_options)
-            processed_bytes, info = compress_image_bytes(
-                screenshot_bytes,
-                config,
-                jpeg_quality=capture_quality,
-            )
-            cache_path = cache_image_bytes(processed_bytes, config, prefix="browser")
-
-            # OPTIONALLY save to file if path provided
-            saved_msg = ""
-            if action.path:
-                screenshots_dir = os.getenv("STRANDS_BROWSER_SCREENSHOTS_DIR", "screenshots")
-                os.makedirs(screenshots_dir, exist_ok=True)
-                full_path = os.path.join(screenshots_dir, action.path) if not os.path.isabs(action.path) else action.path
-                if not full_path.lower().endswith((".jpg", ".jpeg")):
-                    full_path = f"{os.path.splitext(full_path)[0]}.jpg"
-
-                with open(full_path, 'wb') as f:
-                    f.write(processed_bytes)
-
-                saved_msg = f"Screenshot saved to {full_path}. "
-                logger.debug(f"Screenshot saved to file: {full_path}")
-
-            content = []
-            if info["fits"]:
-                image_block = {"image": {"format": "jpeg", "source": {"bytes": processed_bytes}}}
-                if cache_path:
-                    image_block["cache_path"] = cache_path
-                content.append(image_block)
+            if not action.path:
+                filename = f"screenshot_{int(time.time())}.png"
+                path = os.path.join(screenshots_dir, filename)
+            elif not os.path.isabs(action.path):
+                path = os.path.join(screenshots_dir, action.path)
             else:
-                note = (
-                    "Screenshot cached but omitted from context "
-                    f"({round(info['bytes'] / 1024, 1)} KB > {round(config.max_bytes / 1024, 1)} KB)"
-                )
-                if cache_path:
-                    note = f"{note}. Cache: {cache_path}"
-                content.append({"text": note})
+                path = action.path
 
-            content.append({"text": f"{saved_msg}Screenshot captured ({round(info['bytes'] / 1024, 1)} KB)."})
-
-            return {"status": "success", "content": content}
+            logger.debug(f"About to take screenshot with page: {page}")
+            await page.screenshot(path=path)
+            return {"status": "success", "content": [{"text": f"Screenshot saved as {path}"}]}
         except Exception as e:
             logger.debug("exception=<%s> | screenshot action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def refresh(self, action: RefreshAction) -> Dict[str, Any]:
-        """Refresh the current page (ASYNC)."""
-        return await self._async_refresh(action)
+    def refresh(self, action: RefreshAction) -> Dict[str, Any]:
+        """Refresh the current page."""
+        return self._execute_async(self._async_refresh(action))
 
     async def _async_refresh(self, action: RefreshAction) -> Dict[str, Any]:
         """Async refresh implementation."""
@@ -707,15 +653,16 @@ class Browser(ABC):
             return {"status": "error", "content": [{"text": "Error: No active page for session"}]}
 
         try:
-            await page.reload(timeout=30000)
+            await page.reload()
+            await page.wait_for_load_state("networkidle")
             return {"status": "success", "content": [{"text": "Page refreshed"}]}
         except Exception as e:
             logger.debug("exception=<%s> | refresh action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def back(self, action: BackAction) -> Dict[str, Any]:
-        """Navigate back in browser history (ASYNC)."""
-        return await self._async_back(action)
+    def back(self, action: BackAction) -> Dict[str, Any]:
+        """Navigate back in browser history."""
+        return self._execute_async(self._async_back(action))
 
     async def _async_back(self, action: BackAction) -> Dict[str, Any]:
         """Async back implementation."""
@@ -729,15 +676,16 @@ class Browser(ABC):
             return {"status": "error", "content": [{"text": "Error: No active page for session"}]}
 
         try:
-            await page.go_back(timeout=30000)
+            await page.go_back()
+            await page.wait_for_load_state("networkidle")
             return {"status": "success", "content": [{"text": "Navigated back"}]}
         except Exception as e:
             logger.debug("exception=<%s> | back action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def forward(self, action: ForwardAction) -> Dict[str, Any]:
-        """Navigate forward in browser history (ASYNC)."""
-        return await self._async_forward(action)
+    def forward(self, action: ForwardAction) -> Dict[str, Any]:
+        """Navigate forward in browser history."""
+        return self._execute_async(self._async_forward(action))
 
     async def _async_forward(self, action: ForwardAction) -> Dict[str, Any]:
         """Async forward implementation."""
@@ -751,15 +699,16 @@ class Browser(ABC):
             return {"status": "error", "content": [{"text": "Error: No active page for session"}]}
 
         try:
-            await page.go_forward(timeout=30000)
+            await page.go_forward()
+            await page.wait_for_load_state("networkidle")
             return {"status": "success", "content": [{"text": "Navigated forward"}]}
         except Exception as e:
             logger.debug("exception=<%s> | forward action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def new_tab(self, action: NewTabAction) -> Dict[str, Any]:
-        """Create a new browser tab (ASYNC)."""
-        return await self._async_new_tab(action)
+    def new_tab(self, action: NewTabAction) -> Dict[str, Any]:
+        """Create a new browser tab."""
+        return self._execute_async(self._async_new_tab(action))
 
     async def _async_new_tab(self, action: NewTabAction) -> Dict[str, Any]:
         """Async new tab implementation."""
@@ -789,9 +738,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | new tab action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def switch_tab(self, action: SwitchTabAction) -> Dict[str, Any]:
-        """Switch to a different tab (ASYNC)."""
-        return await self._async_switch_tab(action)
+    def switch_tab(self, action: SwitchTabAction) -> Dict[str, Any]:
+        """Switch to a different tab."""
+        return self._execute_async(self._async_switch_tab(action))
 
     async def _async_switch_tab(self, action: SwitchTabAction) -> Dict[str, Any]:
         """Async switch tab implementation."""
@@ -835,9 +784,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | switch tab action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def close_tab(self, action: CloseTabAction) -> Dict[str, Any]:
-        """Close a browser tab (ASYNC)."""
-        return await self._async_close_tab(action)
+    def close_tab(self, action: CloseTabAction) -> Dict[str, Any]:
+        """Close a browser tab."""
+        return self._execute_async(self._async_close_tab(action))
 
     async def _async_close_tab(self, action: CloseTabAction) -> Dict[str, Any]:
         """Async close tab implementation."""
@@ -870,9 +819,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | close tab action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def list_tabs(self, action: ListTabsAction) -> Dict[str, Any]:
-        """List all open browser tabs (ASYNC)."""
-        return await self._async_list_tabs(action)
+    def list_tabs(self, action: ListTabsAction) -> Dict[str, Any]:
+        """List all open browser tabs."""
+        return self._execute_async(self._async_list_tabs(action))
 
     async def _async_list_tabs(self, action: ListTabsAction) -> Dict[str, Any]:
         """Async list tabs implementation."""
@@ -899,9 +848,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | list tabs action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def get_cookies(self, action: GetCookiesAction) -> Dict[str, Any]:
-        """Get all cookies for the current page (ASYNC)."""
-        return await self._async_get_cookies(action)
+    def get_cookies(self, action: GetCookiesAction) -> Dict[str, Any]:
+        """Get all cookies for the current page."""
+        return self._execute_async(self._async_get_cookies(action))
 
     async def _async_get_cookies(self, action: GetCookiesAction) -> Dict[str, Any]:
         """Async get cookies implementation."""
@@ -921,9 +870,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | get cookies action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def set_cookies(self, action: SetCookiesAction) -> Dict[str, Any]:
-        """Set cookies for the current page (ASYNC)."""
-        return await self._async_set_cookies(action)
+    def set_cookies(self, action: SetCookiesAction) -> Dict[str, Any]:
+        """Set cookies for the current page."""
+        return self._execute_async(self._async_set_cookies(action))
 
     async def _async_set_cookies(self, action: SetCookiesAction) -> Dict[str, Any]:
         """Async set cookies implementation."""
@@ -943,9 +892,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | set cookies action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def network_intercept(self, action: NetworkInterceptAction) -> Dict[str, Any]:
-        """Set up network request interception (ASYNC)."""
-        return await self._async_network_intercept(action)
+    def network_intercept(self, action: NetworkInterceptAction) -> Dict[str, Any]:
+        """Set up network request interception."""
+        return self._execute_async(self._async_network_intercept(action))
 
     async def _async_network_intercept(self, action: NetworkInterceptAction) -> Dict[str, Any]:
         """Async network intercept implementation."""
@@ -965,9 +914,9 @@ class Browser(ABC):
             logger.debug("exception=<%s> | network intercept action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def execute_cdp(self, action: ExecuteCdpAction) -> Dict[str, Any]:
-        """Execute Chrome DevTools Protocol command (ASYNC)."""
-        return await self._async_execute_cdp(action)
+    def execute_cdp(self, action: ExecuteCdpAction) -> Dict[str, Any]:
+        """Execute Chrome DevTools Protocol command."""
+        return self._execute_async(self._async_execute_cdp(action))
 
     async def _async_execute_cdp(self, action: ExecuteCdpAction) -> Dict[str, Any]:
         """Async execute CDP implementation."""
@@ -988,15 +937,21 @@ class Browser(ABC):
             logger.debug("exception=<%s> | execute CDP action failed", str(e))
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    async def close(self, action: CloseAction) -> Dict[str, Any]:
-        """Close the browser (ASYNC)."""
+    def close(self, action: CloseAction) -> Dict[str, Any]:
+        """Close the browser."""
         try:
-            await self._async_cleanup()
+            self._execute_async(self._async_cleanup())
             return {"status": "success", "content": [{"text": "Browser closed"}]}
         except Exception as e:
             return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}
 
-    # _execute_async REMOVED - Python 3.14+ compatible, no more nest_asyncio
+    def _execute_async(self, action_coro) -> Any:
+        # Apply nest_asyncio if not already applied
+        if not self._nest_asyncio_applied:
+            nest_asyncio.apply()
+            self._nest_asyncio_applied = True
+
+        return self._loop.run_until_complete(action_coro)
 
     async def _async_cleanup(self) -> None:
         """Common async cleanup logic for all Playwright platforms."""
@@ -1019,7 +974,7 @@ class Browser(ABC):
                 cleanup_errors.append(f"Error stopping Playwright: {str(e)}")
         self._playwright = None
 
-        await self.close_platform()
+        self.close_platform()
         self._sessions.clear()
 
         if cleanup_errors:

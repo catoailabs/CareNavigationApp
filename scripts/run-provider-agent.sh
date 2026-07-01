@@ -28,6 +28,21 @@ UVICORN_ARGS=(
 
 if [[ "${STRANDS_AGENT_RELOAD:-1}" == "1" ]]; then
   UVICORN_ARGS+=(--reload)
+  # The agent writes runtime artifacts (a live Chromium profile, logs, REPL
+  # state, streaming event logs) into the workspace during a run. Without these
+  # excludes, uvicorn's reloader watches the whole tree and restarts the worker
+  # mid-run whenever those files churn — which kills the in-flight response and
+  # forces the frontend to reload. Exclude the agent-owned paths.
+  UVICORN_ARGS+=(
+    --reload-exclude "tools/.runtime/*"
+    --reload-exclude ".venv/*"
+    --reload-exclude "logs/*"
+    --reload-exclude "repl_state/*"
+    --reload-exclude "errors/*"
+    --reload-exclude "node_modules/*"
+    --reload-exclude "*.jsonl"
+    --reload-exclude "*.log"
+  )
 fi
 
 exec "$PYTHON_BIN" -m uvicorn "${UVICORN_ARGS[@]}"

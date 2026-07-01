@@ -110,8 +110,10 @@ Please provide your analysis directly:
                     else:
                         logger.warning(f"Tool '{tool_name}' not found in parent agent's tool registry")
             else:
-                # Inherit all tools from parent EXCEPT the think tool to prevent recursion
-                for tool_name, tool_obj in parent_agent.tool_registry.registry.items():
+                # Inherit all tools from parent EXCEPT the think tool to prevent recursion.
+                # Snapshot the registry to avoid "dictionary changed size during
+                # iteration" when tools are loaded concurrently during a run.
+                for tool_name, tool_obj in list(parent_agent.tool_registry.registry.items()):
                     if tool_name == "think":
                         logger.debug("Automatically excluding 'think' tool from nested agent to prevent recursion")
                         continue

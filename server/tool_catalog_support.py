@@ -388,7 +388,10 @@ def _scan_runtime_entries(agent: Agent | None) -> dict[str, CatalogEntry]:
         return {}
 
     entries: dict[str, CatalogEntry] = {}
-    for tool_name, tool_obj in registry.registry.items():
+    # Snapshot the registry: tools may be loaded from other tasks while a run is
+    # in progress, and iterating the live dict raises "dictionary changed size
+    # during iteration".
+    for tool_name, tool_obj in list(registry.registry.items()):
         module = getattr(tool_obj, "__module__", None)
         path: str | None = None
         module_path: str | None = None
@@ -727,7 +730,9 @@ def _resolve_catalog_tool(agent: Agent | None, name: str | None) -> CatalogEntry
     if not name:
         raise ValueError("name is required")
     if agent is not None and _is_tool_loaded(agent, name):
-        for tool_obj in agent.tool_registry.registry.values():
+        # Snapshot to avoid "dictionary changed size during iteration" if tools
+        # are loaded concurrently while a run is in progress.
+        for tool_obj in list(agent.tool_registry.registry.values()):
             if getattr(tool_obj, "tool_name", None) == name:
                 return CatalogEntry(
                     name=name,

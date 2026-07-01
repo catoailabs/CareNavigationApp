@@ -35,7 +35,7 @@ from xai_sdk.tools import code_execution, web_search, x_search
 # function-name list to maintain anywhere.
 import tools.tool_catalog as _m_tool_catalog
 import tools.virtual_desktop.virtual_desktop_tool as _m_virtual_desktop
-import tools.browser.desktop_browser as _m_desktop_browser
+from tools.browser.desktop_cdp_browser import DesktopCDPBrowser
 import strands_tools.devops.shell as _m_shell
 import strands_tools.devops.editor as _m_editor
 import strands_tools.devops.environment as _m_environment
@@ -95,7 +95,6 @@ BASELINE_TOOL_MODULES = (
     _m_perplexity_search,
     _m_perplexity_deep,
     _m_virtual_desktop,
-    _m_desktop_browser,
 )
 
 
@@ -108,15 +107,36 @@ def _tools_in(module: Any) -> list[Any]:
     ]
 
 
+_BROWSER_INSTANCE: DesktopCDPBrowser | None = None
+
+
+def _browser_tool() -> Any:
+    """The stock strands ``browser`` tool, attached over CDP to the Chromium
+    already running (visibly) on the agent's virtual desktop.
+
+    ``DesktopCDPBrowser`` subclasses the stock ``Browser`` ABC and
+    ``connect_over_cdp`` to the desktop's live browser rather than launching a
+    local Chromium (which the display-less agent container can't do). Actions
+    land in the same window the user watches live.
+
+    ``Browser.browser`` is an instance-bound ``@tool`` (not a module-level
+    callable), so it is registered explicitly here rather than via
+    ``_tools_in``. A single cached instance is reused across sessions."""
+    global _BROWSER_INSTANCE
+    if _BROWSER_INSTANCE is None:
+        _BROWSER_INSTANCE = DesktopCDPBrowser()
+    return _BROWSER_INSTANCE.browser
+
+
 def build_baseline_tools(session_id: str | None = None) -> list[Any]:
-    """Collect all @tool callables across BASELINE_TOOL_MODULES. This includes
-    the ``browser`` tool (``tools.browser.desktop_browser``) that drives Chromium
-    on the agent's virtual desktop over CDP, so the agent and the streamed
-    desktop live-view share one visible browser. ``session_id`` is accepted for
-    call-site parity."""
+    """Collect all @tool callables across BASELINE_TOOL_MODULES, plus the
+    ``browser`` tool attached over CDP to the agent desktop's live Chromium
+    (``tools.browser.desktop_cdp_browser.DesktopCDPBrowser``).
+    ``session_id`` is accepted for call-site parity."""
     tools: list[Any] = []
     for module in BASELINE_TOOL_MODULES:
         tools.extend(_tools_in(module))
+    tools.append(_browser_tool())
     return tools
 DEFAULT_AGENT_ID = "provider-research-agent"
 DEFAULT_MODEL_ID = "grok-4.3"
@@ -323,7 +343,7 @@ def _tool_result_payloads(
 # conversation history they balloon the model context (and cost) on every
 # subsequent turn. Add new screen-capture tools here as they are introduced.
 SCREEN_CAPTURE_TOOLS: frozenset[str] = frozenset(
-    {"browser", "local_chromium_browser", "use_computer", "desktop_screenshot"}
+    {"browser", "local_chromium_browser", "use_computer"}
 )
 
 # Stand-in left in the model context where a screenshot was lifted out, so the

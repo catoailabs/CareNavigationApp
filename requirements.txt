@@ -149,6 +149,7 @@ urllib3
 uvicorn
 validators
 watchdog
+watchfiles
 wcwidth
 wrapt
 xai-sdk
